@@ -7,7 +7,7 @@ This app shows League of Legends stats for a tracked summoner.
 1. `npm install`
 2. Copy `.env.example` to `.env` and set your `RIOT_API_KEY`.
 3. Run with `cargo tauri dev` or `npm run tauri`.
-4. In the dashboard view, enter your summoner name and region to start tracking.
+4. In the dashboard view, enter your **Riot ID** (game name and tag line) and region to start tracking.
 
 ## Recommended IDE Setup
 

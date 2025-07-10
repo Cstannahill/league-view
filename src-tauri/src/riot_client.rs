@@ -26,16 +26,31 @@ impl RiotClient {
         PlatformRoute::from_str(region).expect("invalid region")
     }
 
-    pub async fn get_summoner_by_name(
+
+    pub async fn get_account_by_riot_id(
         &self,
-        name: &str,
+        game_name: &str,
+        tag_line: &str,
         region: &str,
-    ) -> Result<riven::models::summoner_v4::Summoner, RiotApiError> {
-        let route = Self::parse_region(region);
-        let path = format!("/lol/summoner/v4/summoners/by-name/{}", name);
+    ) -> Result<Option<riven::models::account_v1::Account>, RiotApiError> {
+        let route = Self::parse_region(region).to_regional();
+        let path = format!("/riot/account/v1/accounts/by-riot-id/{}/{}", game_name, tag_line);
         let req = self.api.request(Method::GET, route.into(), &path);
         self.api
-            .execute_val("summoner-v4.getBySummonerName", route.into(), req)
+            .execute_opt("account-v1.getByRiotId", route.into(), req)
+            .await
+    }
+
+    pub async fn get_summoner_by_puuid(
+        &self,
+        puuid: &str,
+        region: &str,
+    ) -> Result<Option<riven::models::summoner_v4::Summoner>, RiotApiError> {
+        let route = Self::parse_region(region);
+        let path = format!("/lol/summoner/v4/summoners/by-puuid/{}", puuid);
+        let req = self.api.request(Method::GET, route.into(), &path);
+        self.api
+            .execute_opt("summoner-v4.getByPUUID", route.into(), req)
             .await
     }
 
