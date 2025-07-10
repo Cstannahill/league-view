@@ -1,7 +1,6 @@
 import { useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import { ChakraProvider } from '@chakra-ui/react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useStore } from './store';
 import MatchView from './components/match/MatchView';
@@ -32,8 +31,7 @@ function App() {
   }, []);
 
   return (
-    <ChakraProvider>
-      <AnimatePresence mode="wait">
+    <AnimatePresence mode="wait">
         {mode === 'dashboard' && (
           <motion.div key="dash" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <DashboardView data={dashboard} />
@@ -50,7 +48,6 @@ function App() {
           </motion.div>
         )}
       </AnimatePresence>
-    </ChakraProvider>
   );
 }
 
