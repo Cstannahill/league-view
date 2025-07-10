@@ -7,7 +7,8 @@ use reqwest::Client;
 use tauri::{AppHandle, Emitter};
 
 mod riot_client;
-use riot_client::{RiotClient, MatchSummary};
+use riot_client::RiotClient;
+use riven::consts::QueueType;
 
 static APP_STATE: OnceCell<Arc<State>> = OnceCell::new();
 
@@ -142,23 +143,26 @@ async fn refresh_dashboard() -> Result<serde_json::Value, String> {
 
     let champions: Vec<ChampionStat> = top
         .iter()
-        .map(|m| ChampionStat {
-            id: m.champion_id as u32,
-            name: champs
-                .get(&(m.champion_id as u32))
-                .cloned()
-                .unwrap_or_else(|| m.champion_id.to_string()),
-            level: m.champion_level,
-            points: m.champion_points,
+        .map(|m| {
+            let champ_id = i16::from(m.champion_id) as u32;
+            ChampionStat {
+                id: champ_id,
+                name: champs
+                    .get(&champ_id)
+                    .cloned()
+                    .unwrap_or_else(|| champ_id.to_string()),
+                level: m.champion_level as u32,
+                points: m.champion_points as u32,
+            }
         })
         .collect();
 
     let rank = ranked_entries
         .iter()
-        .find(|e| e.queue_type == "RANKED_SOLO_5x5")
+        .find(|e| e.queue_type == QueueType::RANKED_SOLO_5x5)
         .map(|e| {
-            let wins = e.wins;
-            let losses = e.losses;
+            let wins = e.wins as u32;
+            let losses = e.losses as u32;
             let total = wins + losses;
             let winrate = if total > 0 {
                 wins as f32 / total as f32
@@ -166,9 +170,15 @@ async fn refresh_dashboard() -> Result<serde_json::Value, String> {
                 0.0
             };
             RankInfo {
-                tier: e.tier.clone(),
-                rank: e.rank.clone(),
-                lp: e.league_points as u32,
+                tier: e.tier
+                    .as_ref()
+                    .map(|t| t.to_string())
+                    .unwrap_or_default(),
+                rank: e.rank
+                    .as_ref()
+                    .map(|r| r.to_string())
+                    .unwrap_or_default(),
+                lp: e.league_points.unwrap_or(0) as u32,
                 wins,
                 losses,
                 winrate,
@@ -216,7 +226,7 @@ async fn recent_games(count: Option<u32>) -> Result<serde_json::Value, String> {
 
 async fn poll_loop(app: AppHandle, state: Arc<State>) {
     loop {
-        let (puuid_opt, region_opt, in_game) = {
+        let (puuid_opt, region_opt, _in_game) = {
             let t = state.inner.lock().await;
             (t.puuid.clone(), t.region.clone(), t.in_game)
         };
