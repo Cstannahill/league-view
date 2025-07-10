@@ -11,8 +11,13 @@ export default function MatchView({ data }: Props) {
 
   return (
     <SimpleGrid columns={2} spacing={2} p={4}>
-      {data.game.participants.map((p, idx) => (
-        <PlayerCard key={idx} player={p} ranked={data.ranked[idx]} />
+      {data.game.participants.map((p: any, idx: number) => (
+        <PlayerCard
+          key={idx}
+          player={p}
+          ranked={data.ranked[idx]}
+          traits={data.traits[idx]}
+        />
       ))}
     </SimpleGrid>
   );
