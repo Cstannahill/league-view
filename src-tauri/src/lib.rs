@@ -9,7 +9,7 @@ use riot_client::RiotClient;
 
 static APP_STATE: OnceCell<Arc<State>> = OnceCell::new();
 
-#[derive(Clone)]
+#[derive(Debug)]
 struct State {
     client: RiotClient,
     inner: tokio::sync::Mutex<Tracked>,
@@ -60,7 +60,7 @@ async fn poll_loop(app: AppHandle, state: Arc<State>) {
                     let mut t = state.inner.lock().await;
                     if !t.in_game {
                         t.in_game = true;
-                        let _ = app.emit_all("gameStarted", &game);
+                        let _ = app.emit("gameStarted", Some(game.clone()));
                         let ranked_futs = game
                             .participants
                             .iter()
@@ -80,16 +80,16 @@ async fn poll_loop(app: AppHandle, state: Arc<State>) {
                             .map(|r| r.unwrap_or_default())
                             .collect();
                         let payload = MatchPayload { game, ranked, traits };
-                        let _ = app.emit_all("matchData", payload);
+                        let _ = app.emit("matchData", Some(payload));
                     }
                 }
                 Ok(None) => {
                     let mut t = state.inner.lock().await;
                     if t.in_game {
                         t.in_game = false;
-                        let _ = app.emit_all("gameEnded", ());
+                        let _ = app.emit("gameEnded", Some(()));
                     } else {
-                        let _ = app.emit_all("noGame", ());
+                        let _ = app.emit("noGame", Some(()));
                     }
                 }
                 Err(err) => {
@@ -136,7 +136,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
             let app_handle = app.handle();
-            tauri::async_runtime::spawn(poll_loop(app_handle, state));
+            tauri::async_runtime::spawn(poll_loop(app_handle.clone(), state));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -96,10 +96,10 @@ impl RiotClient {
         }
         let mut out = Vec::new();
         if count > 0 {
-            if vision / count as f32 < 20.0 {
+            if vision / (count as f32) < 20.0 {
                 out.push("Bad Vision".to_string());
             }
-            if roam as f32 / count as f32 > 1.0 {
+            if (roam as f32) / (count as f32) > 1.0 {
                 out.push("Roamer".to_string());
             }
             if pentakill {
