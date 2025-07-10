@@ -2,20 +2,19 @@ use std::{sync::Arc, time::Duration};
 
 use once_cell::sync::OnceCell;
 use serde::Serialize;
-use tauri::{AppHandle, Manager, Emitter};
+use tauri::{AppHandle, Emitter};
 
 mod riot_client;
 use riot_client::RiotClient;
 
 static APP_STATE: OnceCell<Arc<State>> = OnceCell::new();
 
-#[derive(Debug)]
 struct State {
     client: RiotClient,
     inner: tokio::sync::Mutex<Tracked>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default)]
 struct Tracked {
     name: Option<String>,
     region: Option<String>,
@@ -40,28 +39,28 @@ async fn set_tracked_summoner(name: String, region: String) -> Result<(), String
 
 #[tauri::command]
 async fn refresh_dashboard() -> Result<serde_json::Value, String> {
-    // Placeholder empty stats
     Ok(serde_json::json!({}))
 }
 
 async fn poll_loop(app: AppHandle, state: Arc<State>) {
     loop {
-        let (puuid, region, in_game) = {
+        let (puuid_opt, region_opt, in_game) = {
             let t = state.inner.lock().await;
-            (
-                t.puuid.clone(),
-                t.region.clone(),
-                t.in_game,
-            )
+            (t.puuid.clone(), t.region.clone(), t.in_game)
         };
-        if let (Some(puuid), Some(region)) = (puuid, region) {
-            let region_str = region.as_str();
+
+        // unwrap both puuid and region as &str
+        if let (Some(puuid), Some(region_str)) = (puuid_opt, region_opt.as_deref()) {
             match state.client.get_active_game(&puuid, region_str).await {
                 Ok(Some(game)) => {
                     let mut t = state.inner.lock().await;
                     if !t.in_game {
                         t.in_game = true;
+
+                        // Notify frontend: new game started
                         let _ = app.emit("gameStarted", Some(game.clone()));
+
+                        // Fetch ranked stats for each participant
                         let ranked_futs = game
                             .participants
                             .iter()
@@ -71,6 +70,8 @@ async fn poll_loop(app: AppHandle, state: Arc<State>) {
                             .into_iter()
                             .map(|r| r.unwrap_or_default())
                             .collect();
+
+                        // Calculate traits for each participant
                         let trait_futs = game
                             .participants
                             .iter()
@@ -80,10 +81,17 @@ async fn poll_loop(app: AppHandle, state: Arc<State>) {
                             .into_iter()
                             .map(|r| r.unwrap_or_default())
                             .collect();
-                        let payload = MatchPayload { game, ranked, traits };
+
+                        let payload = MatchPayload {
+                            game,
+                            ranked,
+                            traits,
+                        };
+
                         let _ = app.emit("matchData", Some(payload));
                     }
                 }
+
                 Ok(None) => {
                     let mut t = state.inner.lock().await;
                     if t.in_game {
@@ -93,6 +101,7 @@ async fn poll_loop(app: AppHandle, state: Arc<State>) {
                         let _ = app.emit("noGame", Some(()));
                     }
                 }
+
                 Err(err) => {
                     if let Some(status) = err.status_code() {
                         if status.as_u16() == 429 {
@@ -111,11 +120,12 @@ async fn poll_loop(app: AppHandle, state: Arc<State>) {
                 }
             }
         }
+
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct MatchPayload {
     game: riven::models::spectator_v5::CurrentGameInfo,
     ranked: Vec<Vec<riven::models::league_v4::LeagueEntry>>,
@@ -131,7 +141,7 @@ pub fn run() {
         client,
         inner: tokio::sync::Mutex::new(Tracked::default()),
     });
-    APP_STATE.set(state.clone()).unwrap();
+    APP_STATE.set(state.clone()).expect("Failed to set APP_STATE");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
