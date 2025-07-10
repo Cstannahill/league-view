@@ -9,6 +9,12 @@ pub struct RiotClient {
     api: RiotApi,
 }
 
+impl std::fmt::Debug for RiotClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RiotClient").finish()
+    }
+}
+
 impl RiotClient {
     pub fn new(key: &str) -> Self {
         Self {
