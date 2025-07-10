@@ -53,8 +53,19 @@ struct ChampionStat {
 }
 
 #[derive(Serialize)]
+struct RankInfo {
+    tier: String,
+    rank: String,
+    lp: u32,
+    wins: u32,
+    losses: u32,
+    winrate: f32,
+}
+
+#[derive(Serialize)]
 struct DashboardStats {
     champions: Vec<ChampionStat>,
+    rank: Option<RankInfo>,
 }
 
 #[tauri::command]
@@ -94,6 +105,12 @@ async fn refresh_dashboard() -> Result<serde_json::Value, String> {
         .get_champion_masteries(&puuid, &region)
         .await
         .map_err(|e| format!("{:?}", e))?;
+
+    let ranked_entries = state
+        .client
+        .get_ranked_stats(&puuid, &region)
+        .await
+        .map_err(|e| format!("{:?}", e))?;
     let mut top = masteries;
     top.sort_by(|a, b| b.champion_points.cmp(&a.champion_points));
     top.truncate(5);
@@ -115,7 +132,29 @@ async fn refresh_dashboard() -> Result<serde_json::Value, String> {
         })
         .collect();
 
-    let stats = DashboardStats { champions };
+    let rank = ranked_entries
+        .iter()
+        .find(|e| e.queue_type == "RANKED_SOLO_5x5")
+        .map(|e| {
+            let wins = e.wins;
+            let losses = e.losses;
+            let total = wins + losses;
+            let winrate = if total > 0 {
+                wins as f32 / total as f32
+            } else {
+                0.0
+            };
+            RankInfo {
+                tier: e.tier.clone(),
+                rank: e.rank.clone(),
+                lp: e.league_points as u32,
+                wins,
+                losses,
+                winrate,
+            }
+        });
+
+    let stats = DashboardStats { champions, rank };
     Ok(serde_json::to_value(stats).unwrap())
 }
 

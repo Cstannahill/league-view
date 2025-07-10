@@ -7,8 +7,18 @@ export interface ChampionStat {
   level: number;
   points: number;
 }
+
+export interface RankInfo {
+  tier: string;
+  rank: string;
+  lp: number;
+  wins: number;
+  losses: number;
+  winrate: number;
+}
 export interface DashboardStats {
   champions: ChampionStat[];
+  rank?: RankInfo | null;
 }
 export interface MatchPayload {
   game: any;
