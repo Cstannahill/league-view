@@ -178,7 +178,7 @@ async fn refresh_dashboard() -> Result<serde_json::Value, String> {
                     .as_ref()
                     .map(|r| r.to_string())
                     .unwrap_or_default(),
-                lp: e.league_points.unwrap_or(0) as u32,
+                lp: e.league_points as u32,
                 wins,
                 losses,
                 winrate,
