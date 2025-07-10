@@ -1,4 +1,4 @@
-import { Box, Text, Stat, StatLabel, StatNumber, StatHelpText } from '@chakra-ui/react';
+import { Box, Text, Stat, StatLabel, StatNumber, StatHelpText, CircularProgress, CircularProgressLabel, HStack } from '@chakra-ui/react';
 import { RankInfo } from '../../store';
 
 interface Props {
@@ -18,15 +18,20 @@ export default function RankCard({ rank }: Props) {
 
   return (
     <Box borderWidth="1px" p={2} borderRadius="md">
-      <Stat>
-        <StatLabel>
-          {rank.tier} {rank.rank}
-        </StatLabel>
-        <StatNumber>{rank.lp} LP</StatNumber>
-        <StatHelpText>
-          {rank.wins}W/{rank.losses}L - {winrate}% WR
-        </StatHelpText>
-      </Stat>
+      <HStack>
+        <CircularProgress value={parseFloat(winrate)} size="60px" color="green.400">
+          <CircularProgressLabel>{winrate}%</CircularProgressLabel>
+        </CircularProgress>
+        <Stat ml={2}>
+          <StatLabel>
+            {rank.tier} {rank.rank}
+          </StatLabel>
+          <StatNumber>{rank.lp} LP</StatNumber>
+          <StatHelpText>
+            {rank.wins}W/{rank.losses}L
+          </StatHelpText>
+        </Stat>
+      </HStack>
     </Box>
   );
 }

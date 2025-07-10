@@ -20,6 +20,15 @@ export interface DashboardStats {
   champions: ChampionStat[];
   rank?: RankInfo | null;
 }
+
+export interface GameSummary {
+  champion_id: number;
+  win: boolean;
+  kills: number;
+  deaths: number;
+  assists: number;
+  duration: number;
+}
 export interface MatchPayload {
   game: any;
   ranked: any[][];

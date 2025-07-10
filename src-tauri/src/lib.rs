@@ -7,7 +7,7 @@ use reqwest::Client;
 use tauri::{AppHandle, Emitter};
 
 mod riot_client;
-use riot_client::RiotClient;
+use riot_client::{RiotClient, MatchSummary};
 
 static APP_STATE: OnceCell<Arc<State>> = OnceCell::new();
 
@@ -67,6 +67,7 @@ struct DashboardStats {
     champions: Vec<ChampionStat>,
     rank: Option<RankInfo>,
 }
+
 
 #[tauri::command]
 async fn set_tracked_summoner(game_name: String, tag_line: String, region: String) -> Result<(), String> {
@@ -156,6 +157,23 @@ async fn refresh_dashboard() -> Result<serde_json::Value, String> {
 
     let stats = DashboardStats { champions, rank };
     Ok(serde_json::to_value(stats).unwrap())
+}
+
+#[tauri::command]
+async fn recent_games(count: Option<u32>) -> Result<serde_json::Value, String> {
+    let state = APP_STATE.get().ok_or("not initialized")?.clone();
+    let (puuid, region) = {
+        let t = state.inner.lock().await;
+        (t.puuid.clone(), t.region.clone())
+    };
+    let puuid = puuid.ok_or("no summoner")?;
+    let region = region.ok_or("no region")?;
+    let games = state
+        .client
+        .get_recent_matches(&puuid, &region, count.unwrap_or(10) as usize)
+        .await
+        .map_err(|e| format!("{:?}", e))?;
+    Ok(serde_json::to_value(games).unwrap())
 }
 
 async fn poll_loop(app: AppHandle, state: Arc<State>) {
@@ -276,7 +294,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             set_tracked_summoner,
-            refresh_dashboard
+            refresh_dashboard,
+            recent_games
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
