@@ -9,6 +9,7 @@ use riot_client::RiotClient;
 
 static APP_STATE: OnceCell<Arc<State>> = OnceCell::new();
 
+#[derive(Debug)]
 struct State {
     client: RiotClient,
     inner: tokio::sync::Mutex<Tracked>,
@@ -64,7 +65,11 @@ async fn poll_loop(app: AppHandle, state: Arc<State>) {
                         let ranked_futs = game
                             .participants
                             .iter()
-                            .map(|p| state.client.get_ranked_stats(&p.puuid, region_str));
+                            .map(|p| {
+                                state
+                                    .client
+                                    .get_ranked_stats(p.puuid.as_deref().unwrap_or(""), region_str)
+                            });
                         let ranked: Vec<_> = futures::future::join_all(ranked_futs)
                             .await
                             .into_iter()
@@ -75,7 +80,11 @@ async fn poll_loop(app: AppHandle, state: Arc<State>) {
                         let trait_futs = game
                             .participants
                             .iter()
-                            .map(|p| state.client.calculate_traits(&p.puuid, region_str));
+                            .map(|p| {
+                                state
+                                    .client
+                                    .calculate_traits(p.puuid.as_deref().unwrap_or(""), region_str)
+                            });
                         let traits: Vec<Vec<String>> = futures::future::join_all(trait_futs)
                             .await
                             .into_iter()
