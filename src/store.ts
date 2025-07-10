@@ -64,12 +64,13 @@ export const useStore = create<AppState>((set) => ({
   dashboard: null,
   matchData: null,
   gameName: stored?.gameName || '',
-  tagLine: stored?.tagLine || '',
+  tagLine: stored?.region || 'NA1',
   region: stored?.region || 'NA1',
   setMode: (mode) => set({ mode }),
   setDashboard: (dashboard) => set({ dashboard }),
   setMatchData: (matchData) => set({ matchData }),
   setSummoner: async (gameName, tagLine, region) => {
+    console.log('Setting summoner:', gameName, tagLine, region);
     await invoke('set_tracked_summoner', { gameName, tagLine, region });
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(

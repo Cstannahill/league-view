@@ -17,6 +17,7 @@ export default function SummonerForm() {
   }, [gameName, tagLine, region]);
 
   const handleSave = async () => {
+    console.log('Saving summoner:', game, tag, reg);
     await setSummoner(game, tag, reg);
     const data = await invoke('refresh_dashboard');
     setDashboard(data as any);
