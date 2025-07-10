@@ -15,7 +15,7 @@ struct State {
     inner: tokio::sync::Mutex<Tracked>,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct Tracked {
     name: Option<String>,
     region: Option<String>,
