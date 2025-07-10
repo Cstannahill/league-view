@@ -4,12 +4,13 @@ import { useStore } from '../../store';
 import { invoke } from '@tauri-apps/api/core';
 
 export default function SummonerForm() {
-  const { summonerName, region, setSummoner, setDashboard } = useStore();
-  const [name, setName] = useState(summonerName);
+  const { gameName, tagLine, region, setSummoner, setDashboard } = useStore();
+  const [game, setGame] = useState(gameName);
+  const [tag, setTag] = useState(tagLine);
   const [reg, setReg] = useState(region);
 
   const handleSave = async () => {
-    await setSummoner(name, reg);
+    await setSummoner(game, tag, reg);
     const data = await invoke('refresh_dashboard');
     setDashboard(data as any);
   };
@@ -18,8 +19,12 @@ export default function SummonerForm() {
     <Box mb={4}>
       <HStack alignItems="flex-end" spacing={2}>
         <FormControl>
-          <FormLabel>Summoner Name</FormLabel>
-          <Input value={name} onChange={(e) => setName(e.target.value)} />
+          <FormLabel>Game Name</FormLabel>
+          <Input value={game} onChange={(e) => setGame(e.target.value)} />
+        </FormControl>
+        <FormControl w="100px">
+          <FormLabel>Tag Line</FormLabel>
+          <Input value={tag} onChange={(e) => setTag(e.target.value)} />
         </FormControl>
         <FormControl w="120px">
           <FormLabel>Region</FormLabel>

@@ -24,17 +24,24 @@ struct Tracked {
 }
 
 #[tauri::command]
-async fn set_tracked_summoner(name: String, region: String) -> Result<(), String> {
+async fn set_tracked_summoner(game_name: String, tag_line: String, region: String) -> Result<(), String> {
     let state = APP_STATE.get().ok_or("not initialized")?.clone();
-    let summoner = state
+    let account = state
         .client
-        .get_summoner_by_name(&name, &region)
+        .get_account_by_riot_id(&game_name, &tag_line, &region)
+        .await
+        .map_err(|e| format!("{:?}", e))?
+        .ok_or("account not found")?;
+    // Fetch full summoner data to ensure region is valid and get puuid if missing
+    let _ = state
+        .client
+        .get_summoner_by_puuid(&account.puuid, &region)
         .await
         .map_err(|e| format!("{:?}", e))?;
     let mut guard = state.inner.lock().await;
-    guard.name = Some(name);
+    guard.name = Some(format!("{}#{}", game_name, tag_line));
     guard.region = Some(region);
-    guard.puuid = Some(summoner.puuid.clone());
+    guard.puuid = Some(account.puuid);
     Ok(())
 }
 
