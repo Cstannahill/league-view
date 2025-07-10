@@ -2063,6 +2063,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "once_cell",
+ "reqwest 0.11.27",
  "riven",
  "serde",
  "serde_json",

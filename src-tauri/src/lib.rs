@@ -2,12 +2,33 @@ use std::{sync::Arc, time::Duration};
 
 use once_cell::sync::OnceCell;
 use serde::Serialize;
+use std::collections::HashMap;
+use reqwest::Client;
 use tauri::{AppHandle, Emitter};
 
 mod riot_client;
 use riot_client::RiotClient;
 
 static APP_STATE: OnceCell<Arc<State>> = OnceCell::new();
+
+async fn fetch_champion_map() -> Result<HashMap<u32, String>, reqwest::Error> {
+    // Latest patch version could be fetched but we hardcode for simplicity
+    let url = "https://ddragon.leagueoflegends.com/cdn/14.9.1/data/en_US/champion.json";
+    let json: serde_json::Value = Client::new().get(url).send().await?.json().await?;
+    let mut map = HashMap::new();
+    if let Some(data) = json.get("data").and_then(|d| d.as_object()) {
+        for val in data.values() {
+            if let (Some(key), Some(name)) = (val.get("key"), val.get("name")) {
+                if let (Some(id_str), Some(name_str)) = (key.as_str(), name.as_str()) {
+                    if let Ok(id) = id_str.parse::<u32>() {
+                        map.insert(id, name_str.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Ok(map)
+}
 
 #[derive(Debug)]
 struct State {
@@ -21,6 +42,19 @@ struct Tracked {
     region: Option<String>,
     puuid: Option<String>,
     in_game: bool,
+}
+
+#[derive(Serialize)]
+struct ChampionStat {
+    id: u32,
+    name: String,
+    level: u32,
+    points: u32,
+}
+
+#[derive(Serialize)]
+struct DashboardStats {
+    champions: Vec<ChampionStat>,
 }
 
 #[tauri::command]
@@ -47,7 +81,42 @@ async fn set_tracked_summoner(game_name: String, tag_line: String, region: Strin
 
 #[tauri::command]
 async fn refresh_dashboard() -> Result<serde_json::Value, String> {
-    Ok(serde_json::json!({}))
+    let state = APP_STATE.get().ok_or("not initialized")?.clone();
+    let (puuid, region) = {
+        let t = state.inner.lock().await;
+        (t.puuid.clone(), t.region.clone())
+    };
+    let puuid = puuid.ok_or("no summoner")?;
+    let region = region.ok_or("no region")?;
+
+    let masteries = state
+        .client
+        .get_champion_masteries(&puuid, &region)
+        .await
+        .map_err(|e| format!("{:?}", e))?;
+    let mut top = masteries;
+    top.sort_by(|a, b| b.champion_points.cmp(&a.champion_points));
+    top.truncate(5);
+
+    let champs = fetch_champion_map()
+        .await
+        .map_err(|e| format!("{:?}", e))?;
+
+    let champions: Vec<ChampionStat> = top
+        .iter()
+        .map(|m| ChampionStat {
+            id: m.champion_id as u32,
+            name: champs
+                .get(&(m.champion_id as u32))
+                .cloned()
+                .unwrap_or_else(|| m.champion_id.to_string()),
+            level: m.champion_level,
+            points: m.champion_points,
+        })
+        .collect();
+
+    let stats = DashboardStats { champions };
+    Ok(serde_json::to_value(stats).unwrap())
 }
 
 async fn poll_loop(app: AppHandle, state: Arc<State>) {
