@@ -166,8 +166,12 @@ impl RiotClient {
         for id in ids {
             if let Some(m) = self.api.match_v5().get_match(route, &id).await? {
                 if let Some(p) = m.info.participants.iter().find(|p| p.puuid == puuid) {
+                    let champ_id = p
+                        .champion()
+                        .map(|c| i16::from(c) as u32)
+                        .unwrap_or(0);
                     out.push(MatchSummary {
-                        champion_id: p.champion_id as u32,
+                        champion_id: champ_id,
                         win: p.win,
                         kills: p.kills as u32,
                         deaths: p.deaths as u32,
