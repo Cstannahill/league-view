@@ -80,6 +80,20 @@ impl RiotClient {
             .await
     }
 
+    pub async fn get_champion_masteries(
+        &self,
+        summoner_id: &str,
+        region: &str,
+    ) -> Result<Vec<riven::models::champion_mastery_v4::ChampionMastery>, RiotApiError>
+    {
+        let route = Self::parse_region(region);
+        let path = format!("/lol/champion-mastery/v4/champion-masteries/by-puuid/{}", summoner_id);
+        let req = self.api.request(Method::GET, route.into(), &path);
+        self.api
+            .execute_val("champion-mastery-v4.getAllChampionMasteries", route.into(), req)
+            .await
+    }
+
     pub async fn calculate_traits(
         &self,
         puuid: &str,

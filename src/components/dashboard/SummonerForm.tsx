@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Box, Button, FormControl, FormLabel, HStack, Input, Select } from '@chakra-ui/react';
+import { useState, useEffect } from 'react';
+import { Box, Button, FormControl, FormLabel, HStack, Input, Select, Heading } from '@chakra-ui/react';
 import { useStore } from '../../store';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -8,12 +8,33 @@ export default function SummonerForm() {
   const [game, setGame] = useState(gameName);
   const [tag, setTag] = useState(tagLine);
   const [reg, setReg] = useState(region);
+  const [editing, setEditing] = useState(!(gameName && tagLine));
+
+  useEffect(() => {
+    setGame(gameName);
+    setTag(tagLine);
+    setReg(region);
+  }, [gameName, tagLine, region]);
 
   const handleSave = async () => {
     await setSummoner(game, tag, reg);
     const data = await invoke('refresh_dashboard');
     setDashboard(data as any);
+    setEditing(false);
   };
+
+  if (!editing) {
+    return (
+      <HStack mb={4} justifyContent="space-between">
+        <Heading size="md">
+          {gameName}#{tagLine} - {region}
+        </Heading>
+        <Button size="sm" onClick={() => setEditing(true)}>
+          Change
+        </Button>
+      </HStack>
+    );
+  }
 
   return (
     <Box mb={4}>

@@ -7,11 +7,11 @@ interface Props {
   data: DashboardStats | null;
 }
 
-export default function DashboardView({ data: _data }: Props) {
+export default function DashboardView({ data }: Props) {
   return (
     <Box p={4}>
       <SummonerForm />
-      <ChampionStats />
+      <ChampionStats champions={data?.champions || []} />
     </Box>
   );
 }
