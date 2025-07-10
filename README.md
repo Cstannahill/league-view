@@ -1,6 +1,12 @@
 # Tauri + React + Typescript
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+This app shows League of Legends stats for a tracked summoner.
+
+## Local Development
+
+1. `npm install`
+2. Copy `.env.example` to `.env` and set your `RIOT_API_KEY`.
+3. Run with `cargo tauri dev` or `npm run tauri`.
 
 ## Recommended IDE Setup
 

@@ -1,50 +1,34 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useEffect } from 'react';
+import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
+import { ChakraProvider } from '@chakra-ui/react';
+import { useStore } from './store';
+import MatchView from './components/match/MatchView';
+import DashboardView from './components/dashboard/DashboardView';
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const { inGame, matchData, dashboard, setInGame, setMatchData, setDashboard } = useStore();
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  useEffect(() => {
+    const unlistenMatch = listen('matchData', (e) => {
+      setMatchData(e.payload as any);
+      setInGame(true);
+    });
+    const unlistenEnd = listen('gameEnded', async () => {
+      setInGame(false);
+      const data = await invoke('refresh_dashboard');
+      setDashboard(data as any);
+    });
+    return () => {
+      unlistenMatch.then((f) => f());
+      unlistenEnd.then((f) => f());
+    };
+  }, []);
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+    <ChakraProvider>
+      {inGame ? <MatchView data={matchData} /> : <DashboardView data={dashboard} />}
+    </ChakraProvider>
   );
 }
 
