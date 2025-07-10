@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use once_cell::sync::OnceCell;
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Emitter};
 
 mod riot_client;
 use riot_client::RiotClient;
@@ -15,7 +15,7 @@ struct State {
     inner: tokio::sync::Mutex<Tracked>,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct Tracked {
     name: Option<String>,
     region: Option<String>,
@@ -55,7 +55,8 @@ async fn poll_loop(app: AppHandle, state: Arc<State>) {
             )
         };
         if let (Some(puuid), Some(region)) = (puuid, region) {
-            match state.client.get_active_game(&puuid, &region).await {
+            let region_str = region.as_str();
+            match state.client.get_active_game(&puuid, region_str).await {
                 Ok(Some(game)) => {
                     let mut t = state.inner.lock().await;
                     if !t.in_game {
@@ -64,7 +65,7 @@ async fn poll_loop(app: AppHandle, state: Arc<State>) {
                         let ranked_futs = game
                             .participants
                             .iter()
-                            .map(|p| state.client.get_ranked_stats(&p.puuid, &region));
+                            .map(|p| state.client.get_ranked_stats(&p.puuid, region_str));
                         let ranked: Vec<_> = futures::future::join_all(ranked_futs)
                             .await
                             .into_iter()
@@ -73,7 +74,7 @@ async fn poll_loop(app: AppHandle, state: Arc<State>) {
                         let trait_futs = game
                             .participants
                             .iter()
-                            .map(|p| state.client.calculate_traits(&p.puuid, &region));
+                            .map(|p| state.client.calculate_traits(&p.puuid, region_str));
                         let traits: Vec<Vec<String>> = futures::future::join_all(trait_futs)
                             .await
                             .into_iter()

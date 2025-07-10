@@ -1,7 +1,8 @@
-use riven::{RiotApi, RiotApiError, consts::{PlatformRoute, RegionalRoute}};
+use riven::{RiotApi, RiotApiError, consts::{PlatformRoute, RegionalRoute}, reqwest::Method};
 use std::str::FromStr;
 
 /// Wrapper around [`RiotApi`] with helpers for common calls.
+#[derive(Debug)]
 pub struct RiotClient {
     api: RiotApi,
 }
@@ -24,7 +25,7 @@ impl RiotClient {
         let route = Self::parse_region(region);
         // Summoner-v4 by-name endpoint was removed from riven meta, so construct manually
         let path = format!("/lol/summoner/v4/summoners/by-name/{}", name);
-        let req = self.api.request(reqwest::Method::GET, route.into(), &path);
+        let req = self.api.request(Method::GET, route.into(), &path);
         self.api
             .execute_val("summoner-v4.getBySummonerName", route.into(), req)
             .await
@@ -41,7 +42,7 @@ impl RiotClient {
             "/lol/spectator/v5/active-games/by-summoner/{}",
             enc_id
         );
-        let req = self.api.request(reqwest::Method::GET, route.into(), &path);
+        let req = self.api.request(Method::GET, route.into(), &path);
         self.api
             .execute_opt("spectator-v5.getCurrentGameInfoByPuuid", route.into(), req)
             .await
@@ -55,7 +56,7 @@ impl RiotClient {
     ) -> Result<Vec<riven::models::league_v4::LeagueEntry>, RiotApiError> {
         let route = Self::parse_region(region);
         let path = format!("/lol/league/v4/entries/by-puuid/{}", enc_id);
-        let req = self.api.request(reqwest::Method::GET, route.into(), &path);
+        let req = self.api.request(Method::GET, route.into(), &path);
         self.api
             .execute_val("league-v4.getLeagueEntriesByPUUID", route.into(), req)
             .await
