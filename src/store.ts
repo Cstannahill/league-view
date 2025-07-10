@@ -1,22 +1,27 @@
 import { create } from 'zustand';
 
 export interface DashboardStats {}
-export interface MatchPayload {}
+export interface MatchPayload {
+  game: any;
+  ranked: any[][];
+  traits: string[][];
+}
+export type Mode = 'dashboard' | 'loading' | 'ingame';
 
 interface AppState {
-  inGame: boolean;
+  mode: Mode;
   dashboard: DashboardStats | null;
   matchData: MatchPayload | null;
-  setInGame: (val: boolean) => void;
+  setMode: (val: Mode) => void;
   setDashboard: (d: DashboardStats | null) => void;
   setMatchData: (m: MatchPayload | null) => void;
 }
 
 export const useStore = create<AppState>((set) => ({
-  inGame: false,
+  mode: 'dashboard',
   dashboard: null,
   matchData: null,
-  setInGame: (inGame) => set({ inGame }),
+  setMode: (mode) => set({ mode }),
   setDashboard: (dashboard) => set({ dashboard }),
   setMatchData: (matchData) => set({ matchData }),
 }));

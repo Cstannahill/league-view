@@ -61,18 +61,27 @@ async fn poll_loop(app: AppHandle, state: Arc<State>) {
                     if !t.in_game {
                         t.in_game = true;
                         let _ = app.emit_all("gameStarted", &game);
+                        let ranked_futs = game
+                            .participants
+                            .iter()
+                            .map(|p| state.client.get_ranked_stats(&p.puuid, &region));
+                        let ranked: Vec<_> = futures::future::join_all(ranked_futs)
+                            .await
+                            .into_iter()
+                            .map(|r| r.unwrap_or_default())
+                            .collect();
+                        let trait_futs = game
+                            .participants
+                            .iter()
+                            .map(|p| state.client.calculate_traits(&p.puuid, &region));
+                        let traits: Vec<Vec<String>> = futures::future::join_all(trait_futs)
+                            .await
+                            .into_iter()
+                            .map(|r| r.unwrap_or_default())
+                            .collect();
+                        let payload = MatchPayload { game, ranked, traits };
+                        let _ = app.emit_all("matchData", payload);
                     }
-                    let ranked_futs = game
-                        .participants
-                        .iter()
-                        .map(|p| state.client.get_ranked_stats(&p.puuid, &region));
-                    let ranked: Vec<_> = futures::future::join_all(ranked_futs)
-                        .await
-                        .into_iter()
-                        .map(|r| r.unwrap_or_default())
-                        .collect();
-                    let payload = MatchPayload { game, ranked };
-                    let _ = app.emit_all("matchData", payload);
                 }
                 Ok(None) => {
                     let mut t = state.inner.lock().await;
@@ -109,6 +118,7 @@ async fn poll_loop(app: AppHandle, state: Arc<State>) {
 struct MatchPayload {
     game: riven::models::spectator_v5::CurrentGameInfo,
     ranked: Vec<Vec<riven::models::league_v4::LeagueEntry>>,
+    traits: Vec<Vec<String>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

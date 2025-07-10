@@ -6,7 +6,7 @@ interface Props {
   data: DashboardStats | null;
 }
 
-export default function DashboardView({ data }: Props) {
+export default function DashboardView({ data: _data }: Props) {
   return (
     <Box p={4}>
       <ChampionStats />

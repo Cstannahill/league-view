@@ -1,4 +1,4 @@
-use riven::{RiotApi, RiotApiError, consts::PlatformRoute};
+use riven::{RiotApi, RiotApiError, consts::{PlatformRoute, RegionalRoute}};
 use std::str::FromStr;
 
 /// Wrapper around [`RiotApi`] with helpers for common calls.
@@ -59,5 +59,53 @@ impl RiotClient {
         self.api
             .execute_val("league-v4.getLeagueEntriesByPUUID", route.into(), req)
             .await
+    }
+
+    pub async fn calculate_traits(
+        &self,
+        puuid: &str,
+        region: &str,
+    ) -> Result<Vec<String>, RiotApiError> {
+        let platform = Self::parse_region(region);
+        let route = platform.to_regional();
+        let ids = self
+            .api
+            .endpoints()
+            .match_v5()
+            .get_match_ids_by_puuid(route, puuid, Some(5), None, None, None, None, None)
+            .await?;
+        let mut vision = 0.0f32;
+        let mut roam = 0u32;
+        let mut pentakill = false;
+        let mut count = 0u32;
+        for id in ids {
+            if let Some(m) = self.api.endpoints().match_v5().get_match(route, &id).await? {
+                if let Some(p) = m.info.participants.iter().find(|p| p.puuid == puuid) {
+                    count += 1;
+                    if let Some(v) = p.vision_score {
+                        vision += v as f32;
+                    }
+                    if let Some(k) = p.kills_on_other_lanes_early_jungle_as_laner {
+                        roam += k as u32;
+                    }
+                    if p.penta_kills > 0 {
+                        pentakill = true;
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if count > 0 {
+            if vision / count as f32 < 20.0 {
+                out.push("Bad Vision".to_string());
+            }
+            if roam as f32 / count as f32 > 1.0 {
+                out.push("Roamer".to_string());
+            }
+            if pentakill {
+                out.push("Clutch Finisher".to_string());
+            }
+        }
+        Ok(out)
     }
 }
