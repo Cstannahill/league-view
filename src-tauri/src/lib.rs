@@ -324,7 +324,8 @@ struct MatchPayload {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    dotenvy::dotenv().ok();
+    dotenvy::from_filename(".env").ok();
+
     let key = std::env::var("RIOT_API_KEY").expect("RIOT_API_KEY not set");
     let client = RiotClient::new(&key);
     let state = Arc::new(State {

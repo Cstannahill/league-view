@@ -2060,8 +2060,10 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 name = "league-view"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "dotenvy",
  "futures",
+ "lol-game-client-api",
  "once_cell",
  "reqwest 0.11.27",
  "riven",
@@ -2150,6 +2152,20 @@ name = "log"
 version = "0.4.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
+
+[[package]]
+name = "lol-game-client-api"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f61d20ab1cf5f001ba486fc5dc7e1c219c2953cbaddc508242f5a5374a6d8f14"
+dependencies = [
+ "async-trait",
+ "log",
+ "reqwest 0.11.27",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+]
 
 [[package]]
 name = "mac"
