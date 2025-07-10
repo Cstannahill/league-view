@@ -11,9 +11,18 @@ use riot_client::{RiotClient, MatchSummary};
 
 static APP_STATE: OnceCell<Arc<State>> = OnceCell::new();
 
+async fn get_latest_ddragon_version() -> Result<String, reqwest::Error> {
+    let url = "https://ddragon.leagueoflegends.com/api/versions.json";
+    let versions: Vec<String> = Client::new().get(url).send().await?.json().await?;
+    Ok(versions.into_iter().next().unwrap_or_default())
+}
+
 async fn fetch_champion_map() -> Result<HashMap<u32, String>, reqwest::Error> {
-    // Latest patch version could be fetched but we hardcode for simplicity
-    let url = "https://ddragon.leagueoflegends.com/cdn/14.9.1/data/en_US/champion.json";
+    let version = get_latest_ddragon_version().await?;
+    let url = format!(
+        "https://ddragon.leagueoflegends.com/cdn/{}/data/en_US/champion.json",
+        version
+    );
     let json: serde_json::Value = Client::new().get(url).send().await?.json().await?;
     let mut map = HashMap::new();
     if let Some(data) = json.get("data").and_then(|d| d.as_object()) {
@@ -66,6 +75,17 @@ struct RankInfo {
 struct DashboardStats {
     champions: Vec<ChampionStat>,
     rank: Option<RankInfo>,
+}
+
+#[derive(Serialize)]
+struct NamedGameSummary {
+    champion_id: u32,
+    champion_name: String,
+    win: bool,
+    kills: u32,
+    deaths: u32,
+    assists: u32,
+    duration: u32,
 }
 
 
@@ -173,7 +193,25 @@ async fn recent_games(count: Option<u32>) -> Result<serde_json::Value, String> {
         .get_recent_matches(&puuid, &region, count.unwrap_or(10) as usize)
         .await
         .map_err(|e| format!("{:?}", e))?;
-    Ok(serde_json::to_value(games).unwrap())
+    let champs = fetch_champion_map()
+        .await
+        .map_err(|e| format!("{:?}", e))?;
+    let named: Vec<_> = games
+        .into_iter()
+        .map(|g| NamedGameSummary {
+            champion_id: g.champion_id,
+            champion_name: champs
+                .get(&g.champion_id)
+                .cloned()
+                .unwrap_or_else(|| g.champion_id.to_string()),
+            win: g.win,
+            kills: g.kills,
+            deaths: g.deaths,
+            assists: g.assists,
+            duration: g.duration,
+        })
+        .collect();
+    Ok(serde_json::to_value(named).unwrap())
 }
 
 async fn poll_loop(app: AppHandle, state: Arc<State>) {

@@ -29,7 +29,7 @@ export default function RecentGames() {
         <Tbody>
           {games.map((g, i) => (
             <Tr key={i}>
-              <Td>{g.champion_id}</Td>
+              <Td>{g.champion_name}</Td>
               <Td>{`${g.kills}/${g.deaths}/${g.assists}`}</Td>
               <Td isNumeric>{Math.round(g.duration / 60)}m</Td>
               <Td>{g.win ? <Badge colorScheme="green">W</Badge> : <Badge colorScheme="red">L</Badge>}</Td>

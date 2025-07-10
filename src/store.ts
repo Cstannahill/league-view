@@ -23,6 +23,7 @@ export interface DashboardStats {
 
 export interface GameSummary {
   champion_id: number;
+  champion_name: string;
   win: boolean;
   kills: number;
   deaths: number;
