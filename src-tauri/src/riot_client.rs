@@ -9,6 +9,16 @@ pub struct RiotClient {
     api: RiotApi,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct MatchSummary {
+    pub champion_id: u32,
+    pub win: bool,
+    pub kills: u32,
+    pub deaths: u32,
+    pub assists: u32,
+    pub duration: u32,
+}
+
 impl std::fmt::Debug for RiotClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RiotClient").finish()
@@ -131,6 +141,40 @@ impl RiotClient {
             }
             if pentakill {
                 out.push("Clutch Finisher".to_string());
+            }
+        }
+
+        Ok(out)
+    }
+
+    pub async fn get_recent_matches(
+        &self,
+        puuid: &str,
+        region: &str,
+        count: usize,
+    ) -> Result<Vec<MatchSummary>, RiotApiError> {
+        let platform = Self::parse_region(region);
+        let route = platform.to_regional();
+
+        let ids = self
+            .api
+            .match_v5()
+            .get_match_ids_by_puuid(route, puuid, Some(count as i32), None, None, None, None, None)
+            .await?;
+
+        let mut out = Vec::new();
+        for id in ids {
+            if let Some(m) = self.api.match_v5().get_match(route, &id).await? {
+                if let Some(p) = m.info.participants.iter().find(|p| p.puuid == puuid) {
+                    out.push(MatchSummary {
+                        champion_id: p.champion_id as u32,
+                        win: p.win,
+                        kills: p.kills as u32,
+                        deaths: p.deaths as u32,
+                        assists: p.assists as u32,
+                        duration: m.info.game_duration as u32,
+                    });
+                }
             }
         }
 
