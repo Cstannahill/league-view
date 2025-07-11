@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Champion Images</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .champion { margin: 20px 0; padding: 20px; border: 1px solid #ccc; border-radius: 8px; }
+        .splash { width: 300px; height: 200px; object-fit: cover; border-radius: 8px; }
+        .square { width: 64px; height: 64px; border-radius: 8px; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <h1>Champion Image URL Test</h1>
+    
+    <div class="champion">
+        <h3>Aatrox</h3>
+        <p>Splash Art:</p>
+        <img class="splash" src="https://ddragon.leagueoflegends.com/cdn/img/champion/splash/Aatrox_0.jpg" 
+             alt="Aatrox Splash" onerror="this.style.border='2px solid red';">
+        <p>Square Icon:</p>
+        <img class="square" src="https://ddragon.leagueoflegends.com/cdn/14.1.1/img/champion/Aatrox.png" 
+             alt="Aatrox Icon" onerror="this.style.border='2px solid red';">
+    </div>
+
+    <div class="champion">
+        <h3>Ahri</h3>
+        <p>Splash Art:</p>
+        <img class="splash" src="https://ddragon.leagueoflegends.com/cdn/img/champion/splash/Ahri_0.jpg" 
+             alt="Ahri Splash" onerror="this.style.border='2px solid red';">
+        <p>Square Icon:</p>
+        <img class="square" src="https://ddragon.leagueoflegends.com/cdn/14.1.1/img/champion/Ahri.png" 
+             alt="Ahri Icon" onerror="this.style.border='2px solid red';">
+    </div>
+
+    <div class="champion">
+        <h3>Akali</h3>
+        <p>Splash Art:</p>
+        <img class="splash" src="https://ddragon.leagueoflegends.com/cdn/img/champion/splash/Akali_0.jpg" 
+             alt="Akali Splash" onerror="this.style.border='2px solid red';">
+        <p>Square Icon:</p>
+        <img class="square" src="https://ddragon.leagueoflegends.com/cdn/14.1.1/img/champion/Akali.png" 
+             alt="Akali Icon" onerror="this.style.border='2px solid red';">
+    </div>
+
+    <script>
+        // Test if images load successfully
+        const images = document.querySelectorAll('img');
+        images.forEach(img => {
+            img.onload = function() {
+                console.log(`✓ Successfully loaded: ${this.src}`);
+            };
+            img.onerror = function() {
+                console.error(`✗ Failed to load: ${this.src}`);
+                this.nextElementSibling?.classList.add('error');
+            };
+        });
+    </script>
+</body>
+</html>
