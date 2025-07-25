@@ -6,6 +6,7 @@ use riven::{
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
+use crate::retry::{retry_riot_api, standard_retry_config, quick_retry_config};
 
 pub struct RiotClient {
     api: RiotApi,
@@ -236,16 +237,122 @@ impl std::fmt::Debug for RiotClient {
 
 impl RiotClient {
     pub fn new(key: &str) -> Self {
-        Self {
-            api: RiotApi::new(key),
-        }
+        println!("RiotClient::new - Step A: Received key of length {}", key.len());
+        
+        // Clone the key to ensure we own the string
+        let api_key = key.to_string();
+        println!("RiotClient::new - Step B: Cloned key");
+        
+        // Use a more defensive approach for API initialization
+        println!("RiotClient::new - Step C: About to create RiotApi");
+        let api = RiotApi::new(&api_key);
+        println!("RiotClient::new - Step D: RiotApi created successfully");
+        
+        let client = Self { api };
+        println!("RiotClient::new - Step E: RiotClient struct created");
+        
+        client
     }
 
     fn parse_region(region: &str) -> PlatformRoute {
         PlatformRoute::from_str(region).expect("invalid region")
     }
 
+    // Enhanced methods with retry logic
+    pub async fn get_account_by_riot_id_with_retry(
+        &self,
+        game_name: &str,
+        tag_line: &str,
+        region: &str,
+    ) -> Result<Option<riven::models::account_v1::Account>, crate::retry::RetryError> {
+        let game_name = game_name.to_string();
+        let tag_line = tag_line.to_string();
+        let region = region.to_string();
+        
+        retry_riot_api(
+            || self.get_account_by_riot_id(&game_name, &tag_line, &region),
+            standard_retry_config(),
+            "get_account_by_riot_id"
+        ).await
+    }
 
+    pub async fn get_summoner_by_puuid_with_retry(
+        &self,
+        puuid: &str,
+        region: &str,
+    ) -> Result<Option<riven::models::summoner_v4::Summoner>, crate::retry::RetryError> {
+        let puuid = puuid.to_string();
+        let region = region.to_string();
+        
+        retry_riot_api(
+            || self.get_summoner_by_puuid(&puuid, &region),
+            standard_retry_config(),
+            "get_summoner_by_puuid"
+        ).await
+    }
+
+    pub async fn get_active_game_with_retry(
+        &self,
+        enc_id: &str,
+        region: &str,
+    ) -> Result<Option<riven::models::spectator_v5::CurrentGameInfo>, crate::retry::RetryError> {
+        let enc_id = enc_id.to_string();
+        let region = region.to_string();
+        
+        retry_riot_api(
+            || self.get_active_game(&enc_id, &region),
+            quick_retry_config(), // Use quick retry for live game polling
+            "get_active_game"
+        ).await
+    }
+
+    pub async fn get_ranked_stats_with_retry(
+        &self,
+        enc_id: &str,
+        region: &str,
+    ) -> Result<Vec<riven::models::league_v4::LeagueEntry>, crate::retry::RetryError> {
+        let enc_id = enc_id.to_string();
+        let region = region.to_string();
+        
+        retry_riot_api(
+            || self.get_ranked_stats(&enc_id, &region),
+            standard_retry_config(),
+            "get_ranked_stats"
+        ).await
+    }
+
+    pub async fn get_champion_masteries_with_retry(
+        &self,
+        puuid: &str,
+        region: &str,
+    ) -> Result<Vec<riven::models::champion_mastery_v4::ChampionMastery>, crate::retry::RetryError> {
+        let puuid = puuid.to_string();
+        let region = region.to_string();
+        
+        retry_riot_api(
+            || self.get_champion_masteries(&puuid, &region),
+            standard_retry_config(),
+            "get_champion_masteries"
+        ).await
+    }
+
+    pub async fn get_recent_matches_with_retry(
+        &self,
+        puuid: &str,
+        region: &str,
+        count: usize,
+    ) -> Result<Vec<MatchSummary>, crate::retry::RetryError> {
+        let puuid = puuid.to_string();
+        let region = region.to_string();
+        
+        retry_riot_api(
+            || self.get_recent_matches(&puuid, &region, count),
+            standard_retry_config(),
+            "get_recent_matches"
+        ).await
+    }
+
+    // Original methods (kept for backward compatibility)
     pub async fn get_account_by_riot_id(
         &self,
         game_name: &str,
@@ -666,7 +773,6 @@ impl RiotClient {
         if fallback_used {
             match self.check_ongoing_match_via_history(puuid, region).await {
                 Ok(Some(match_state)) => {
-                    detection_confidence = 0.7; // Lower confidence from indirect detection
                     return MatchDetectionResult {
                         match_state,
                         detection_method: "Match History Analysis".to_string(),
@@ -688,7 +794,6 @@ impl RiotClient {
         match self.check_account_status(puuid, region).await {
             Ok(status) => {
                 if status.contains("in-game") {
-                    detection_confidence = 0.5; // Low confidence from status
                     return MatchDetectionResult {
                         match_state: LiveMatchState {
                             is_in_game: true,
@@ -804,10 +909,10 @@ impl RiotClient {
         // Get recent matches
         let matches = self.get_match_history_ids(puuid, region, 1).await?;
         
-        if let Some(recent_match_id) = matches.first() {
+        if let Some(_recent_match_id) = matches.first() {
             // Check if the most recent match is very recent (within last 2 hours)
             // This could indicate an ongoing game that just started
-            let current_time = SystemTime::now()
+            let _current_time = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs() as i64;
@@ -820,19 +925,13 @@ impl RiotClient {
     }
 
     /// Check account status for in-game indicators
-    async fn check_account_status(&self, puuid: &str, region: &str) -> Result<String, RiotApiError> {
+    async fn check_account_status(&self, _puuid: &str, _region: &str) -> Result<String, RiotApiError> {
         // This is a placeholder for checking account status
         // The actual implementation would depend on available endpoints
         Ok("available".to_string())
     }
 
     /// Get champion name from champion ID
-    fn get_champion_name_from_id(&self, champion_id: i64) -> String {
-        // This should be implemented with a champion data mapping
-        // For now, return a placeholder
-        format!("Champion_{}", champion_id)
-    }
-
     /// Enhanced match history retrieval with analytics integration
     pub async fn get_match_history_with_analytics(
         &self,

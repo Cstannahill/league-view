@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Card, CardHeader, CardBody, Heading, Text, HStack, Icon } from '@chakra-ui/react';
 import { FaUsers } from 'react-icons/fa';
 import { SocialGameplayAnalytics } from '../../types/analytics';
@@ -12,6 +12,14 @@ const SocialAnalyticsComponent: React.FC<SocialAnalyticsComponentProps> = ({
     socialAnalytics,
     compactView = false
 }) => {
+    const memoizedDuoPerformance = useMemo(() => (
+        socialAnalytics.duoPerformance.map((duo, index) => (
+            <Text key={index}>
+                {duo.partnerName}: {duo.winRate.toFixed(1)}% WR in {duo.gamesPlayed} games
+            </Text>
+        ))
+    ), [socialAnalytics.duoPerformance]);
+
     return (
         <Card>
             <CardHeader>
@@ -35,11 +43,7 @@ const SocialAnalyticsComponent: React.FC<SocialAnalyticsComponentProps> = ({
                         <Text fontWeight="bold" mt={4}>
                             Duo Performance:
                         </Text>
-                        {socialAnalytics.duoPerformance.map((duo, index) => (
-                            <Text key={index}>
-                                {duo.partnerName}: {duo.winRate.toFixed(1)}% WR in {duo.gamesPlayed} games
-                            </Text>
-                        ))}
+                        {memoizedDuoPerformance}
                     </>
                 )}
             </CardBody>

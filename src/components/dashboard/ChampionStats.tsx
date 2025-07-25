@@ -1,3 +1,4 @@
+import React, { useMemo } from 'react';
 import {
   Box,
   Heading,
@@ -7,6 +8,9 @@ import {
   Tr,
   Th,
   Td,
+  Tooltip,
+  Progress,
+  Text,
 } from '@chakra-ui/react';
 import { ChampionStat } from '../../store';
 
@@ -14,7 +18,26 @@ interface Props {
   champions: ChampionStat[];
 }
 
-export default function ChampionStats({ champions }: Props) {
+const ChampionStats: React.FC<Props> = React.memo(({ champions }: Props) => {
+  const tableRows = useMemo(() => {
+    return champions.map((c) => (
+      <Tr key={c.id}>
+        <Td>
+          <Tooltip label={`Level ${c.level} | ${c.points} pts`} placement="top">
+            <span>{c.name}</span>
+          </Tooltip>
+        </Td>
+        <Td>{c.level}</Td>
+        <Td isNumeric>
+          <Box w="100%">
+            <Progress value={c.points} max={100000} colorScheme={c.points > 50000 ? 'green' : c.points > 20000 ? 'yellow' : 'red'} size="sm" borderRadius="md" />
+            <Text fontSize="xs" color="gray.500">{c.points} pts</Text>
+          </Box>
+        </Td>
+      </Tr>
+    ));
+  }, [champions]);
+
   if (!champions.length) {
     return (
       <Box>
@@ -36,16 +59,10 @@ export default function ChampionStats({ champions }: Props) {
             <Th isNumeric>Points</Th>
           </Tr>
         </Thead>
-        <Tbody>
-          {champions.map((c) => (
-            <Tr key={c.id}>
-              <Td>{c.name}</Td>
-              <Td>{c.level}</Td>
-              <Td isNumeric>{c.points}</Td>
-            </Tr>
-          ))}
-        </Tbody>
+        <Tbody>{tableRows}</Tbody>
       </Table>
     </Box>
   );
-}
+});
+
+export default ChampionStats;

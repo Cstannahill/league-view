@@ -1,20 +1,25 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
     Box,
     HStack,
     Button,
     Text,
     Icon,
-    useColorModeValue
+    useColorModeValue,
+    Spacer,
+    IconButton
 } from '@chakra-ui/react';
 import {
     FaHome,
-    FaGamepad
+    FaGamepad,
+    FaCog
 } from 'react-icons/fa';
 import { useStore, Mode } from '../../store';
+import { APISettingsModal } from '../settings/APISettingsModal';
 
 const Navigation: React.FC = () => {
     const { mode, setMode } = useStore();
+    const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const bg = useColorModeValue('white', 'gray.800');
     const borderColor = useColorModeValue('gray.200', 'gray.600');
 
@@ -44,21 +49,36 @@ const Navigation: React.FC = () => {
             top={0}
             zIndex={10}
         >
-            <HStack spacing={1} justify="center">
-                {navItems.map((item) => (
-                    <Button
-                        key={item.mode}
-                        variant={mode === item.mode ? 'solid' : 'ghost'}
-                        colorScheme={mode === item.mode ? 'blue' : 'gray'}
-                        leftIcon={<Icon as={item.icon} />}
-                        onClick={() => setMode(item.mode)}
-                        size="md"
-                        fontWeight={mode === item.mode ? 'bold' : 'normal'}
-                    >
-                        <Text>{item.label}</Text>
-                    </Button>
-                ))}
+            <HStack spacing={1} width="100%">
+                <HStack spacing={1}>
+                    {navItems.map((item) => (
+                        <Button
+                            key={item.mode}
+                            variant={mode === item.mode ? 'solid' : 'ghost'}
+                            colorScheme={mode === item.mode ? 'blue' : 'gray'}
+                            leftIcon={<Icon as={item.icon} />}
+                            onClick={() => setMode(item.mode)}
+                            size="md"
+                            fontWeight={mode === item.mode ? 'bold' : 'normal'}
+                        >
+                            <Text>{item.label}</Text>
+                        </Button>
+                    ))}
+                </HStack>
+                <Spacer />
+                <IconButton
+                    aria-label="Settings"
+                    icon={<Icon as={FaCog} />}
+                    variant="ghost"
+                    size="md"
+                    onClick={() => setIsSettingsOpen(true)}
+                />
             </HStack>
+            
+            <APISettingsModal
+                isOpen={isSettingsOpen}
+                onClose={() => setIsSettingsOpen(false)}
+            />
         </Box>
     );
 };

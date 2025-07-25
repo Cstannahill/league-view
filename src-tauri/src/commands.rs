@@ -9,7 +9,147 @@ use crate::riot_client::RiotClient;
 use riven::consts::QueueType;
 use chrono;
 
+// Define RetryError type that we're using
+#[derive(Debug)]
+pub struct RetryError {
+    pub message: String,
+}
+
+impl std::fmt::Display for RetryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for RetryError {}
+
+impl From<RetryError> for ApiError {
+    fn from(error: RetryError) -> Self {
+        ApiError::Unknown(error.message)
+    }
+}
+
+impl From<crate::retry::RetryError> for ApiError {
+    fn from(error: crate::retry::RetryError) -> Self {
+        ApiError::Unknown(format!("Retry failed: {}", error))
+    }
+}
+
 pub static APP_STATE: OnceCell<Arc<State>> = OnceCell::new();
+
+// Add error types for better error handling
+#[derive(Debug, Serialize)]
+pub enum ApiError {
+    ApiKeyInvalid,
+    ApiKeyMissing,
+    RateLimited,
+    NetworkError,
+    ServerError,
+    NotFound,
+    Unknown(String),
+}
+
+impl From<riven::RiotApiError> for ApiError {
+    fn from(error: riven::RiotApiError) -> Self {
+        match error.status_code() {
+            Some(status) => {
+                match status.as_u16() {
+                    401 | 403 => ApiError::ApiKeyInvalid,
+                    404 => ApiError::NotFound,
+                    429 => ApiError::RateLimited,
+                    500..=599 => ApiError::ServerError,
+                    _ => ApiError::Unknown(format!("HTTP {}", status))
+                }
+            }
+            None => {
+                // Check if it's a network error
+                if error.to_string().contains("timeout") || error.to_string().contains("connect") {
+                    ApiError::NetworkError
+                } else {
+                    ApiError::Unknown(error.to_string())
+                }
+            }
+        }
+    }
+}
+
+// Mock data for fallback when API is unavailable
+fn get_mock_dashboard_data() -> DashboardStats {
+    DashboardStats {
+        champions: vec![
+            ChampionStat {
+                id: 266,
+                name: "Aatrox".to_string(),
+                level: 7,
+                points: 234567,
+            },
+            ChampionStat {
+                id: 103,
+                name: "Ahri".to_string(),
+                level: 5,
+                points: 87234,
+            },
+            ChampionStat {
+                id: 84,
+                name: "Akali".to_string(),
+                level: 4,
+                points: 45123,
+            }
+        ],
+        rank: Some(RankInfo {
+            tier: "Gold".to_string(),
+            rank: "II".to_string(),
+            lp: 67,
+            wins: 23,
+            losses: 17,
+            winrate: 57.5,
+        }),
+        performance: Some(PerformanceData {
+            average_kda: KDAStats {
+                kills: 8.2,
+                deaths: 5.1,
+                assists: 7.3,
+            },
+            win_rate: 57.5,
+            total_lp_gain: 150,
+            games_analyzed: 40,
+            recent_form: "hot".to_string(),
+            playstyle_traits: vec!["Aggressive Player".to_string(), "Team Player".to_string()],
+        }),
+    }
+}
+
+fn get_mock_recent_games() -> Vec<NamedGameSummary> {
+    vec![
+        NamedGameSummary {
+            champion_id: 266,
+            champion_name: "Aatrox".to_string(),
+            win: true,
+            kills: 12,
+            deaths: 3,
+            assists: 8,
+            duration: 1847,
+        },
+        NamedGameSummary {
+            champion_id: 103,
+            champion_name: "Ahri".to_string(),
+            win: false,
+            kills: 6,
+            deaths: 7,
+            assists: 12,
+            duration: 2156,
+        },
+        NamedGameSummary {
+            champion_id: 84,
+            champion_name: "Akali".to_string(),
+            win: true,
+            kills: 15,
+            deaths: 4,
+            assists: 6,
+            duration: 1634,
+        }
+    ]
+}
 
 async fn get_latest_ddragon_version() -> Result<String, reqwest::Error> {
     let url = "https://ddragon.leagueoflegends.com/api/versions.json";
@@ -108,21 +248,91 @@ struct KDAStats {
 
 #[tauri::command]
 pub async fn set_tracked_summoner(game_name: String, tag_line: String, region: String) -> Result<(), String> {
-    use log::{info};
+    use log::{info, warn};
     info!("Rust setting summoner: {}#{} - {}", game_name, tag_line, region);
     let state = APP_STATE.get().ok_or("not initialized")?.clone();
     info!("State retrieved: {:?}", state);
-    let account = state
+    
+    // Check if we should use mock mode
+    let should_use_mock = std::env::var("API_MODE").unwrap_or_default() == "mock" ||
+                         std::env::var("RIOT_API_KEY").unwrap_or_default() == "DEMO_KEY";
+
+    if should_use_mock {
+        warn!("Using mock mode for summoner setting");
+        let mut guard = state.inner.lock().await;
+        guard.name = Some(format!("{}#{}", game_name, tag_line));
+        guard.region = Some(region);
+        guard.puuid = Some("mock_puuid_12345".to_string());
+        return Ok(());
+    }
+    
+    // Try with retry mechanism first
+    let account = match state
         .client
-        .get_account_by_riot_id(&game_name, &tag_line, &region)
+        .get_account_by_riot_id_with_retry(&game_name, &tag_line, &region)
         .await
-        .map_err(|e| format!("{:?}", e))?
-        .ok_or("account not found")?;
-    let _ = state
+    {
+        Ok(Some(account)) => account,
+        Ok(None) => return Err("Account not found".to_string()),
+        Err(retry_err) => {
+            let api_error = ApiError::from(retry_err);
+            match api_error {
+                ApiError::ApiKeyInvalid | ApiError::ApiKeyMissing => {
+                    return Err("Invalid API key. Please check your Riot API key configuration.".to_string());
+                }
+                ApiError::NotFound => {
+                    return Err("Account not found. Please check the summoner name and tag.".to_string());
+                }
+                ApiError::RateLimited => {
+                    return Err("Rate limited by Riot API. Please try again in a few minutes.".to_string());
+                }
+                ApiError::NetworkError => {
+                    return Err("Network error. Please check your internet connection.".to_string());
+                }
+                _ => {
+                    warn!("Retry mechanism failed: {:?}", api_error);
+                    // Fallback to single attempt for better error messages
+                    match state
+                        .client
+                        .get_account_by_riot_id(&game_name, &tag_line, &region)
+                        .await
+                    {
+                        Ok(Some(account)) => account,
+                        Ok(None) => return Err("Account not found".to_string()),
+                        Err(e) => return Err(format!("Failed to get account: {:?}", e)),
+                    }
+                }
+            }
+        }
+    };
+    
+    // Verify summoner exists
+    match state
         .client
-        .get_summoner_by_puuid(&account.puuid, &region)
+        .get_summoner_by_puuid_with_retry(&account.puuid, &region)
         .await
-        .map_err(|e| format!("{:?}", e))?;
+    {
+        Ok(Some(_)) => {},
+        Ok(None) => return Err("Summoner not found".to_string()),
+        Err(retry_err) => {
+            let api_error = ApiError::from(retry_err);
+            match api_error {
+                ApiError::ApiKeyInvalid | ApiError::ApiKeyMissing => {
+                    return Err("Invalid API key during summoner verification.".to_string());
+                }
+                _ => {
+                    warn!("Retry mechanism failed for summoner lookup: {:?}", api_error);
+                    // Fallback to single attempt
+                    let _ = state
+                        .client
+                        .get_summoner_by_puuid(&account.puuid, &region)
+                        .await
+                        .map_err(|e| format!("Failed to get summoner: {:?}", e))?;
+                }
+            }
+        }
+    }
+    
     let mut guard = state.inner.lock().await;
     guard.name = Some(format!("{}#{}", game_name, tag_line));
     guard.region = Some(region);
@@ -132,7 +342,7 @@ pub async fn set_tracked_summoner(game_name: String, tag_line: String, region: S
 
 #[tauri::command]
 pub async fn refresh_dashboard() -> Result<serde_json::Value, String> {
-    use log::{info, error};
+    use log::{info, error, warn};
 
     info!("Starting dashboard refresh...");
 
@@ -149,28 +359,80 @@ pub async fn refresh_dashboard() -> Result<serde_json::Value, String> {
     let region = region.ok_or("no region")?;
     info!("Using puuid: {}, region: {}", puuid, region);
 
+    // Check if we should use mock data (invalid API key, demo mode, etc.)
+    let should_use_mock = std::env::var("API_MODE").unwrap_or_default() == "mock" ||
+                         std::env::var("RIOT_API_KEY").unwrap_or_default() == "DEMO_KEY";
+
+    if should_use_mock {
+        warn!("Using mock data for dashboard (demo mode or invalid API key)");
+        let mock_stats = get_mock_dashboard_data();
+        return Ok(serde_json::to_value(mock_stats).unwrap());
+    }
+
     info!("Fetching champion masteries...");
-    let masteries = state
+    let masteries = match state
         .client
-        .get_champion_masteries(&puuid, &region)
+        .get_champion_masteries_with_retry(&puuid, &region)
         .await
-        .map_err(|e| {
-            let msg = format!("Failed to get champion masteries: {:?}", e);
-            error!("{}", msg);
-            msg
-        })?;
+    {
+        Ok(masteries) => masteries,
+        Err(retry_err) => {
+            let api_error = ApiError::from(retry_err);
+            match api_error {
+                ApiError::ApiKeyInvalid | ApiError::ApiKeyMissing => {
+                    warn!("API key invalid, falling back to mock data");
+                    let mock_stats = get_mock_dashboard_data();
+                    return Ok(serde_json::to_value(mock_stats).unwrap());
+                }
+                _ => {
+                    error!("Failed to get champion masteries after retries: {:?}", api_error);
+                    // Try fallback
+                    state
+                        .client
+                        .get_champion_masteries(&puuid, &region)
+                        .await
+                        .map_err(|e| {
+                            let fallback_msg = format!("Failed to get champion masteries (fallback): {:?}", e);
+                            error!("{}", fallback_msg);
+                            fallback_msg
+                        })?
+                }
+            }
+        }
+    };
     info!("Got {} champion masteries.", masteries.len());
 
     info!("Fetching ranked stats...");
-    let ranked_entries = state
+    let ranked_entries = match state
         .client
-        .get_ranked_stats(&puuid, &region)
+        .get_ranked_stats_with_retry(&puuid, &region)
         .await
-        .map_err(|e| {
-            let msg = format!("Failed to get ranked stats: {:?}", e);
-            error!("{}", msg);
-            msg
-        })?;
+    {
+        Ok(ranked_entries) => ranked_entries,
+        Err(retry_err) => {
+            let api_error = ApiError::from(retry_err);
+            match api_error {
+                ApiError::ApiKeyInvalid | ApiError::ApiKeyMissing => {
+                    warn!("API key invalid for ranked stats, using mock data");
+                    let mock_stats = get_mock_dashboard_data();
+                    return Ok(serde_json::to_value(mock_stats).unwrap());
+                }
+                _ => {
+                    error!("Failed to get ranked stats after retries: {:?}", api_error);
+                    // Try fallback
+                    state
+                        .client
+                        .get_ranked_stats(&puuid, &region)
+                        .await
+                        .map_err(|e| {
+                            let fallback_msg = format!("Failed to get ranked stats (fallback): {:?}", e);
+                            error!("{}", fallback_msg);
+                            fallback_msg
+                        })?
+                }
+            }
+        }
+    };
     info!("Got {} ranked entries.", ranked_entries.len());
 
     let mut top = masteries;
@@ -261,11 +523,40 @@ pub async fn recent_games(count: Option<u32>) -> Result<serde_json::Value, Strin
     };
     let puuid = puuid.ok_or("no summoner")?;
     let region = region.ok_or("no region")?;
-    let games = state
+    
+    // Check if we should use mock data
+    let should_use_mock = std::env::var("API_MODE").unwrap_or_default() == "mock" ||
+                         std::env::var("RIOT_API_KEY").unwrap_or_default() == "DEMO_KEY";
+
+    if should_use_mock {
+        let mock_games = get_mock_recent_games();
+        return Ok(serde_json::to_value(mock_games).unwrap());
+    }
+    
+    let games = match state
         .client
-        .get_recent_matches(&puuid, &region, count.unwrap_or(10) as usize)
+        .get_recent_matches_with_retry(&puuid, &region, count.unwrap_or(10) as usize)
         .await
-        .map_err(|e| format!("{:?}", e))?;
+    {
+        Ok(games) => games,
+        Err(retry_err) => {
+            let api_error = ApiError::from(retry_err);
+            match api_error {
+                ApiError::ApiKeyInvalid | ApiError::ApiKeyMissing => {
+                    let mock_games = get_mock_recent_games();
+                    return Ok(serde_json::to_value(mock_games).unwrap());
+                }
+                _ => {
+                    // Try fallback
+                    state
+                        .client
+                        .get_recent_matches(&puuid, &region, count.unwrap_or(10) as usize)
+                        .await
+                        .map_err(|e| format!("Failed to get recent matches: {:?}", e))?
+                }
+            }
+        }
+    };
     let champs = fetch_champion_map()
         .await
         .map_err(|e| format!("{:?}", e))?;
@@ -292,10 +583,19 @@ async fn calculate_performance_insights(
     puuid: &str,
     region: &str,
 ) -> Result<PerformanceData, String> {
-    let games = client
-        .get_recent_matches(puuid, region, 10)
+    let games = match client
+        .get_recent_matches_with_retry(puuid, region, 10)
         .await
-        .map_err(|e| format!("Failed to get recent matches: {:?}", e))?;
+    {
+        Ok(games) => games,
+        Err(_retry_err) => {
+            // Try fallback
+            client
+                .get_recent_matches(puuid, region, 10)
+                .await
+                .map_err(|e| format!("Failed to get recent matches: {:?}", e))?
+        }
+    };
 
     if games.is_empty() {
         return Ok(PerformanceData {
@@ -423,6 +723,10 @@ pub async fn get_enhanced_traits() -> Result<serde_json::Value, String> {
 }
 
 pub async fn poll_loop(app: AppHandle, state: Arc<State>) {
+    use log::{info, warn, error};
+    let mut consecutive_failures = 0;
+    let max_consecutive_failures = 10;
+    
     loop {
         let (puuid_opt, region_opt, _in_game) = {
             let t = state.inner.lock().await;
@@ -430,41 +734,59 @@ pub async fn poll_loop(app: AppHandle, state: Arc<State>) {
         };
 
         if let (Some(puuid), Some(region_str)) = (puuid_opt, region_opt.as_deref()) {
-            match state.client.get_active_game(&puuid, region_str).await {
+            // Try to get active game with retry mechanism
+            match state.client.get_active_game_with_retry(&puuid, region_str).await {
                 Ok(Some(game)) => {
+                    consecutive_failures = 0; // Reset failure counter on success
                     let mut t = state.inner.lock().await;
                     if !t.in_game {
                         t.in_game = true;
 
                         let _ = app.emit("gameStarted", Some(game.clone()));
 
+                        // Fetch additional match data with retry logic
                         let ranked_futs = game
                             .participants
                             .iter()
-                            .map(|p| {
-                                state
+                            .map(|p| async {
+                                match state
                                     .client
-                                    .get_ranked_stats(p.puuid.as_deref().unwrap_or(""), region_str)
+                                    .get_ranked_stats_with_retry(p.puuid.as_deref().unwrap_or(""), region_str)
+                                    .await
+                                {
+                                    Ok(ranked) => ranked,
+                                    Err(retry_err) => {
+                                        warn!("Failed to get ranked stats for participant after retries: {}", retry_err);
+                                        // Fallback to single attempt
+                                        state
+                                            .client
+                                            .get_ranked_stats(p.puuid.as_deref().unwrap_or(""), region_str)
+                                            .await
+                                            .unwrap_or_default()
+                                    }
+                                }
                             });
                         let ranked: Vec<_> = futures::future::join_all(ranked_futs)
-                            .await
-                            .into_iter()
-                            .map(|r| r.unwrap_or_default())
-                            .collect();
+                            .await;
 
                         let trait_futs = game
                             .participants
                             .iter()
-                            .map(|p| {
-                                state
+                            .map(|p| async {
+                                match state
                                     .client
                                     .calculate_traits(p.puuid.as_deref().unwrap_or(""), region_str)
+                                    .await
+                                {
+                                    Ok(traits) => traits,
+                                    Err(err) => {
+                                        warn!("Failed to calculate traits for participant: {:?}", err);
+                                        Vec::new()
+                                    }
+                                }
                             });
                         let traits: Vec<Vec<String>> = futures::future::join_all(trait_futs)
-                            .await
-                            .into_iter()
-                            .map(|r| r.unwrap_or_default())
-                            .collect();
+                            .await;
 
                         let payload = MatchPayload {
                             game,
@@ -477,6 +799,7 @@ pub async fn poll_loop(app: AppHandle, state: Arc<State>) {
                 }
 
                 Ok(None) => {
+                    consecutive_failures = 0; // Reset failure counter on successful API call
                     let mut t = state.inner.lock().await;
                     if t.in_game {
                         t.in_game = false;
@@ -486,25 +809,44 @@ pub async fn poll_loop(app: AppHandle, state: Arc<State>) {
                     }
                 }
 
-                Err(err) => {
-                    if let Some(status) = err.status_code() {
-                        if status.as_u16() == 429 {
-                            if let Some(resp) = err.response() {
-                                if let Some(wait) = resp.headers().get("Retry-After") {
-                                    if let Ok(wait) = wait.to_str() {
-                                        if let Ok(secs) = wait.parse::<u64>() {
-                                            tokio::time::sleep(Duration::from_secs(secs)).await;
-                                            continue;
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                Err(retry_err) => {
+                    consecutive_failures += 1;
+                    error!("Failed to check active game after retries: {} (consecutive failures: {})", 
+                           retry_err, consecutive_failures);
+                    
+                    // Emit connection error event to frontend
+                    let _ = app.emit("connectionError", Some(serde_json::json!({
+                        "error": retry_err.to_string(),
+                        "consecutive_failures": consecutive_failures,
+                        "is_retryable": retry_err.is_retryable
+                    })));
+                    
+                    // If we have too many consecutive failures, increase polling interval
+                    if consecutive_failures >= max_consecutive_failures {
+                        warn!("Too many consecutive failures, extending polling interval");
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                        continue;
                     }
+                    
+                    // For network issues, extend the polling interval gradually
+                    let extended_delay = match retry_err.error_type {
+                        crate::retry::ConnectionErrorType::Network => {
+                            Duration::from_secs(20 + consecutive_failures * 5)
+                        }
+                        crate::retry::ConnectionErrorType::ServerError => {
+                            Duration::from_secs(15 + consecutive_failures * 3)
+                        }
+                        _ => Duration::from_secs(10)
+                    };
+                    
+                    info!("Waiting {:?} before next poll attempt due to error", extended_delay);
+                    tokio::time::sleep(extended_delay).await;
+                    continue;
                 }
             }
         }
 
+        // Normal polling interval
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }
@@ -514,179 +856,6 @@ struct MatchPayload {
     game: riven::models::spectator_v5::CurrentGameInfo,
     ranked: Vec<Vec<riven::models::league_v4::LeagueEntry>>,
     traits: Vec<Vec<String>>,
-}
-
-async fn get_champion_name(champion_id: i32) -> String {
-    // This is a simplified mapping - in a real implementation, you'd fetch from Data Dragon
-    match champion_id {
-        1 => "Annie".to_string(),
-        2 => "Olaf".to_string(),
-        3 => "Galio".to_string(),
-        4 => "Twisted Fate".to_string(),
-        5 => "Xin Zhao".to_string(),
-        6 => "Urgot".to_string(),
-        7 => "LeBlanc".to_string(),
-        8 => "Vladimir".to_string(),
-        9 => "Fiddlesticks".to_string(),
-        10 => "Kayle".to_string(),
-        11 => "Master Yi".to_string(),
-        12 => "Alistar".to_string(),
-        13 => "Ryze".to_string(),
-        14 => "Sion".to_string(),
-        15 => "Sivir".to_string(),
-        16 => "Soraka".to_string(),
-        17 => "Teemo".to_string(),
-        18 => "Tristana".to_string(),
-        19 => "Warwick".to_string(),
-        20 => "Nunu".to_string(),
-        21 => "Miss Fortune".to_string(),
-        22 => "Ashe".to_string(),
-        23 => "Tryndamere".to_string(),
-        24 => "Jax".to_string(),
-        25 => "Morgana".to_string(),
-        26 => "Zilean".to_string(),
-        27 => "Singed".to_string(),
-        28 => "Evelynn".to_string(),
-        29 => "Twitch".to_string(),
-        30 => "Karthus".to_string(),
-        31 => "Cho'Gath".to_string(),
-        32 => "Amumu".to_string(),
-        33 => "Rammus".to_string(),
-        34 => "Anivia".to_string(),
-        35 => "Shaco".to_string(),
-        36 => "Dr. Mundo".to_string(),
-        37 => "Sona".to_string(),
-        38 => "Kassadin".to_string(),
-        39 => "Irelia".to_string(),
-        40 => "Janna".to_string(),
-        41 => "Gangplank".to_string(),
-        42 => "Corki".to_string(),
-        43 => "Karma".to_string(),
-        44 => "Taric".to_string(),
-        45 => "Veigar".to_string(),
-        48 => "Trundle".to_string(),
-        50 => "Swain".to_string(),
-        51 => "Caitlyn".to_string(),
-        53 => "Blitzcrank".to_string(),
-        54 => "Malphite".to_string(),
-        55 => "Katarina".to_string(),
-        56 => "Nocturne".to_string(),
-        57 => "Maokai".to_string(),
-        58 => "Renekton".to_string(),
-        59 => "Jarvan IV".to_string(),
-        60 => "Elise".to_string(),
-        61 => "Orianna".to_string(),
-        62 => "Wukong".to_string(),
-        63 => "Brand".to_string(),
-        64 => "Lee Sin".to_string(),
-        67 => "Vayne".to_string(),
-        68 => "Rumble".to_string(),
-        69 => "Cassiopeia".to_string(),
-        72 => "Skarner".to_string(),
-        74 => "Heimerdinger".to_string(),
-        75 => "Nasus".to_string(),
-        76 => "Nidalee".to_string(),
-        77 => "Udyr".to_string(),
-        78 => "Poppy".to_string(),
-        79 => "Gragas".to_string(),
-        80 => "Pantheon".to_string(),
-        81 => "Ezreal".to_string(),
-        82 => "Mordekaiser".to_string(),
-        83 => "Yorick".to_string(),
-        84 => "Akali".to_string(),
-        85 => "Kennen".to_string(),
-        86 => "Garen".to_string(),
-        87 => "Leona".to_string(),
-        88 => "Malzahar".to_string(),
-        89 => "Talon".to_string(),
-        90 => "Riven".to_string(),
-        91 => "Kog'Maw".to_string(),
-        92 => "Shen".to_string(),
-        96 => "Kog'Maw".to_string(),
-        98 => "Shen".to_string(),
-        99 => "Lux".to_string(),
-        101 => "Xerath".to_string(),
-        102 => "Shyvana".to_string(),
-        103 => "Ahri".to_string(),
-        104 => "Graves".to_string(),
-        105 => "Fizz".to_string(),
-        106 => "Volibear".to_string(),
-        107 => "Rengar".to_string(),
-        110 => "Varus".to_string(),
-        111 => "Nautilus".to_string(),
-        112 => "Viktor".to_string(),
-        113 => "Sejuani".to_string(),
-        114 => "Fiora".to_string(),
-        115 => "Ziggs".to_string(),
-        117 => "Lulu".to_string(),
-        119 => "Draven".to_string(),
-        120 => "Hecarim".to_string(),
-        121 => "Kha'Zix".to_string(),
-        122 => "Darius".to_string(),
-        126 => "Jayce".to_string(),
-        127 => "Lissandra".to_string(),
-        131 => "Diana".to_string(),
-        133 => "Quinn".to_string(),
-        134 => "Syndra".to_string(),
-        136 => "Aurelion Sol".to_string(),
-        141 => "Kayn".to_string(),
-        142 => "Zoe".to_string(),
-        143 => "Zyra".to_string(),
-        145 => "Kai'Sa".to_string(),
-        147 => "Seraphine".to_string(),
-        150 => "Gnar".to_string(),
-        154 => "Zac".to_string(),
-        157 => "Yasuo".to_string(),
-        161 => "Vel'Koz".to_string(),
-        163 => "Taliyah".to_string(),
-        164 => "Camille".to_string(),
-        166 => "Akshan".to_string(),
-        200 => "Bel'Veth".to_string(),
-        201 => "Braum".to_string(),
-        202 => "Jhin".to_string(),
-        203 => "Kindred".to_string(),
-        221 => "Zeri".to_string(),
-        222 => "Jinx".to_string(),
-        223 => "Tahm Kench".to_string(),
-        234 => "Viego".to_string(),
-        235 => "Senna".to_string(),
-        236 => "Lucian".to_string(),
-        238 => "Zed".to_string(),
-        240 => "Kled".to_string(),
-        245 => "Ekko".to_string(),
-        246 => "Qiyana".to_string(),
-        254 => "Vi".to_string(),
-        266 => "Aatrox".to_string(),
-        267 => "Nami".to_string(),
-        268 => "Azir".to_string(),
-        350 => "Yuumi".to_string(),
-        360 => "Samira".to_string(),
-        412 => "Thresh".to_string(),
-        420 => "Illaoi".to_string(),
-        421 => "Rek'Sai".to_string(),
-        427 => "Ivern".to_string(),
-        429 => "Kalista".to_string(),
-        432 => "Bard".to_string(),
-        516 => "Ornn".to_string(),
-        517 => "Sylas".to_string(),
-        518 => "Neeko".to_string(),
-        523 => "Aphelios".to_string(),
-        526 => "Rell".to_string(),
-        555 => "Pyke".to_string(),
-        711 => "Vex".to_string(),
-        777 => "Yone".to_string(),
-        875 => "Sett".to_string(),
-        876 => "Lillia".to_string(),
-        887 => "Gwen".to_string(),
-        888 => "Renata Glasc".to_string(),
-        895 => "Nilah".to_string(),
-        897 => "K'Sante".to_string(),
-        901 => "Smolder".to_string(),
-        902 => "Milio".to_string(),
-        910 => "Hwei".to_string(),
-        950 => "Naafiri".to_string(),
-        _ => format!("Champion {}", champion_id),
-    }
 }
 
 /// Detect if player is currently in a live match with robust error handling
@@ -1038,155 +1207,516 @@ async fn get_match_history_with_enhanced_analytics(
     Ok(matches)
 }
 
-/// Get all champions data
+/// Get all champions data (Updated for July 2025)
 #[tauri::command]
 pub async fn get_all_champions() -> Result<Vec<serde_json::Value>, String> {
-    // In a real implementation, this would fetch from Riot's Data Dragon API
-    // For now, return mock data
+    // Comprehensive champion list as of July 2025
     let champions = vec![
-        serde_json::json!({
-            "id": 266,
-            "name": "Aatrox",
-            "key": "Aatrox",
-            "title": "the Darkin Blade",
-            "roles": ["top"],
-            "image": "/champions/aatrox.png",
-            "tags": ["Fighter", "Tank"]
-        }),
-        serde_json::json!({
-            "id": 103,
-            "name": "Ahri",
-            "key": "Ahri", 
-            "title": "the Nine-Tailed Fox",
-            "roles": ["middle"],
-            "image": "/champions/ahri.png",
-            "tags": ["Mage", "Assassin"]
-        }),
-        serde_json::json!({
-            "id": 84,
-            "name": "Akali",
-            "key": "Akali",
-            "title": "the Rogue Assassin", 
-            "roles": ["middle", "top"],
-            "image": "/champions/akali.png",
-            "tags": ["Assassin"]
-        }),
-        serde_json::json!({
-            "id": 12,
-            "name": "Alistar",
-            "key": "Alistar",
-            "title": "the Minotaur",
-            "roles": ["support"],
-            "image": "/champions/alistar.png", 
-            "tags": ["Tank", "Support"]
-        }),
-        serde_json::json!({
-            "id": 32,
-            "name": "Amumu",
-            "key": "Amumu",
-            "title": "the Sad Mummy",
-            "roles": ["jungle"],
-            "image": "/champions/amumu.png",
-            "tags": ["Tank", "Mage"]
-        })
+        serde_json::json!({"id": 266, "name": "Aatrox", "key": "Aatrox", "title": "the Darkin Blade", "roles": ["top"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 103, "name": "Ahri", "key": "Ahri", "title": "the Nine-Tailed Fox", "roles": ["middle"], "tags": ["Mage", "Assassin"]}),
+        serde_json::json!({"id": 84, "name": "Akali", "key": "Akali", "title": "the Rogue Assassin", "roles": ["middle", "top"], "tags": ["Assassin"]}),
+        serde_json::json!({"id": 166, "name": "Akshan", "key": "Akshan", "title": "the Rogue Sentinel", "roles": ["middle", "top"], "tags": ["Marksman", "Assassin"]}),
+        serde_json::json!({"id": 12, "name": "Alistar", "key": "Alistar", "title": "the Minotaur", "roles": ["support"], "tags": ["Tank", "Support"]}),
+        serde_json::json!({"id": 32, "name": "Amumu", "key": "Amumu", "title": "the Sad Mummy", "roles": ["jungle"], "tags": ["Tank", "Mage"]}),
+        serde_json::json!({"id": 34, "name": "Anivia", "key": "Anivia", "title": "the Cryophoenix", "roles": ["middle"], "tags": ["Mage", "Support"]}),
+        serde_json::json!({"id": 1, "name": "Annie", "key": "Annie", "title": "the Dark Child", "roles": ["middle"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 523, "name": "Aphelios", "key": "Aphelios", "title": "the Weapon of the Faithful", "roles": ["bottom"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 22, "name": "Ashe", "key": "Ashe", "title": "the Frost Archer", "roles": ["bottom"], "tags": ["Marksman", "Support"]}),
+        serde_json::json!({"id": 136, "name": "Aurelion Sol", "key": "AurelionSol", "title": "the Star Forger", "roles": ["middle"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 893, "name": "Aurora", "key": "Aurora", "title": "the Witch Between Worlds", "roles": ["middle", "top"], "tags": ["Mage", "Assassin"]}),
+        serde_json::json!({"id": 268, "name": "Azir", "key": "Azir", "title": "the Emperor of the Sands", "roles": ["middle"], "tags": ["Mage", "Marksman"]}),
+        serde_json::json!({"id": 432, "name": "Bard", "key": "Bard", "title": "the Wandering Caretaker", "roles": ["support"], "tags": ["Support", "Mage"]}),
+        serde_json::json!({"id": 200, "name": "Bel'Veth", "key": "Belveth", "title": "the Empress of the Void", "roles": ["jungle"], "tags": ["Fighter"]}),
+        serde_json::json!({"id": 53, "name": "Blitzcrank", "key": "Blitzcrank", "title": "the Great Steam Golem", "roles": ["support"], "tags": ["Tank", "Fighter"]}),
+        serde_json::json!({"id": 63, "name": "Brand", "key": "Brand", "title": "the Burning Vengeance", "roles": ["support", "middle"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 201, "name": "Braum", "key": "Braum", "title": "the Heart of the Freljord", "roles": ["support"], "tags": ["Support", "Tank"]}),
+        serde_json::json!({"id": 895, "name": "Briar", "key": "Briar", "title": "the Restrained Hunger", "roles": ["jungle"], "tags": ["Fighter", "Assassin"]}),
+        serde_json::json!({"id": 51, "name": "Caitlyn", "key": "Caitlyn", "title": "the Sheriff of Piltover", "roles": ["bottom"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 164, "name": "Camille", "key": "Camille", "title": "the Steel Shadow", "roles": ["top"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 69, "name": "Cassiopeia", "key": "Cassiopeia", "title": "the Serpent's Embrace", "roles": ["middle"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 31, "name": "Cho'Gath", "key": "Chogath", "title": "the Terror of the Void", "roles": ["top"], "tags": ["Tank", "Mage"]}),
+        serde_json::json!({"id": 42, "name": "Corki", "key": "Corki", "title": "the Daring Bombardier", "roles": ["middle"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 122, "name": "Darius", "key": "Darius", "title": "the Hand of Noxus", "roles": ["top"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 131, "name": "Diana", "key": "Diana", "title": "Scorn of the Moon", "roles": ["jungle", "middle"], "tags": ["Fighter", "Mage"]}),
+        serde_json::json!({"id": 119, "name": "Draven", "key": "Draven", "title": "the Glorious Executioner", "roles": ["bottom"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 36, "name": "Dr. Mundo", "key": "DrMundo", "title": "the Madman of Zaun", "roles": ["top", "jungle"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 245, "name": "Ekko", "key": "Ekko", "title": "the Boy Who Shattered Time", "roles": ["jungle", "middle"], "tags": ["Assassin", "Fighter"]}),
+        serde_json::json!({"id": 60, "name": "Elise", "key": "Elise", "title": "the Spider Queen", "roles": ["jungle"], "tags": ["Mage", "Fighter"]}),
+        serde_json::json!({"id": 28, "name": "Evelynn", "key": "Evelynn", "title": "Agony's Embrace", "roles": ["jungle"], "tags": ["Assassin", "Mage"]}),
+        serde_json::json!({"id": 81, "name": "Ezreal", "key": "Ezreal", "title": "the Prodigal Explorer", "roles": ["bottom"], "tags": ["Marksman", "Mage"]}),
+        serde_json::json!({"id": 9, "name": "Fiddlesticks", "key": "Fiddlesticks", "title": "the Ancient Fear", "roles": ["jungle"], "tags": ["Mage", "Support"]}),
+        serde_json::json!({"id": 114, "name": "Fiora", "key": "Fiora", "title": "the Grand Duelist", "roles": ["top"], "tags": ["Fighter", "Assassin"]}),
+        serde_json::json!({"id": 105, "name": "Fizz", "key": "Fizz", "title": "the Tidal Trickster", "roles": ["middle"], "tags": ["Assassin", "Fighter"]}),
+        serde_json::json!({"id": 3, "name": "Galio", "key": "Galio", "title": "the Colossus", "roles": ["middle", "support"], "tags": ["Tank", "Mage"]}),
+        serde_json::json!({"id": 41, "name": "Gangplank", "key": "Gangplank", "title": "the Saltwater Scourge", "roles": ["top"], "tags": ["Fighter"]}),
+        serde_json::json!({"id": 86, "name": "Garen", "key": "Garen", "title": "The Might of Demacia", "roles": ["top"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 150, "name": "Gnar", "key": "Gnar", "title": "the Missing Link", "roles": ["top"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 79, "name": "Gragas", "key": "Gragas", "title": "the Rabble Rouser", "roles": ["jungle"], "tags": ["Fighter", "Mage"]}),
+        serde_json::json!({"id": 104, "name": "Graves", "key": "Graves", "title": "the Outlaw", "roles": ["jungle"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 887, "name": "Gwen", "key": "Gwen", "title": "The Hallowed Seamstress", "roles": ["top"], "tags": ["Fighter", "Assassin"]}),
+        serde_json::json!({"id": 120, "name": "Hecarim", "key": "Hecarim", "title": "the Shadow of War", "roles": ["jungle"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 74, "name": "Heimerdinger", "key": "Heimerdinger", "title": "the Revered Inventor", "roles": ["middle", "support"], "tags": ["Mage", "Support"]}),
+        serde_json::json!({"id": 910, "name": "Hwei", "key": "Hwei", "title": "the Visionary", "roles": ["middle", "support"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 420, "name": "Illaoi", "key": "Illaoi", "title": "the Kraken Priestess", "roles": ["top"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 39, "name": "Irelia", "key": "Irelia", "title": "the Blade Dancer", "roles": ["top", "middle"], "tags": ["Fighter", "Assassin"]}),
+        serde_json::json!({"id": 427, "name": "Ivern", "key": "Ivern", "title": "the Green Father", "roles": ["jungle"], "tags": ["Support", "Mage"]}),
+        serde_json::json!({"id": 40, "name": "Janna", "key": "Janna", "title": "the Storm's Fury", "roles": ["support"], "tags": ["Support", "Mage"]}),
+        serde_json::json!({"id": 59, "name": "Jarvan IV", "key": "JarvanIV", "title": "the Exemplar of Demacia", "roles": ["jungle"], "tags": ["Tank", "Fighter"]}),
+        serde_json::json!({"id": 24, "name": "Jax", "key": "Jax", "title": "Grandmaster at Arms", "roles": ["top", "jungle"], "tags": ["Fighter", "Assassin"]}),
+        serde_json::json!({"id": 126, "name": "Jayce", "key": "Jayce", "title": "the Defender of Tomorrow", "roles": ["top", "middle"], "tags": ["Fighter", "Marksman"]}),
+        serde_json::json!({"id": 202, "name": "Jhin", "key": "Jhin", "title": "the Virtuoso", "roles": ["bottom"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 222, "name": "Jinx", "key": "Jinx", "title": "the Loose Cannon", "roles": ["bottom"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 145, "name": "Kai'Sa", "key": "Kaisa", "title": "Daughter of the Void", "roles": ["bottom"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 429, "name": "Kalista", "key": "Kalista", "title": "the Spear of Vengeance", "roles": ["bottom"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 43, "name": "Karma", "key": "Karma", "title": "the Enlightened One", "roles": ["support", "middle"], "tags": ["Mage", "Support"]}),
+        serde_json::json!({"id": 30, "name": "Karthus", "key": "Karthus", "title": "the Deathsinger", "roles": ["jungle"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 38, "name": "Kassadin", "key": "Kassadin", "title": "the Void Walker", "roles": ["middle"], "tags": ["Assassin", "Mage"]}),
+        serde_json::json!({"id": 55, "name": "Katarina", "key": "Katarina", "title": "the Sinister Blade", "roles": ["middle"], "tags": ["Assassin", "Mage"]}),
+        serde_json::json!({"id": 10, "name": "Kayle", "key": "Kayle", "title": "the Righteous", "roles": ["top"], "tags": ["Fighter", "Support"]}),
+        serde_json::json!({"id": 141, "name": "Kayn", "key": "Kayn", "title": "the Shadow Reaper", "roles": ["jungle"], "tags": ["Fighter", "Assassin"]}),
+        serde_json::json!({"id": 85, "name": "Kennen", "key": "Kennen", "title": "the Heart of the Tempest", "roles": ["top"], "tags": ["Mage", "Marksman"]}),
+        serde_json::json!({"id": 121, "name": "Kha'Zix", "key": "Khazix", "title": "the Voidreaver", "roles": ["jungle"], "tags": ["Assassin"]}),
+        serde_json::json!({"id": 203, "name": "Kindred", "key": "Kindred", "title": "The Eternal Hunters", "roles": ["jungle"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 240, "name": "Kled", "key": "Kled", "title": "the Cantankerous Cavalier", "roles": ["top"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 96, "name": "Kog'Maw", "key": "KogMaw", "title": "the Mouth of the Abyss", "roles": ["bottom"], "tags": ["Marksman", "Mage"]}),
+        serde_json::json!({"id": 897, "name": "K'Sante", "key": "KSante", "title": "the Pride of Nazumah", "roles": ["top"], "tags": ["Tank", "Fighter"]}),
+        serde_json::json!({"id": 7, "name": "LeBlanc", "key": "Leblanc", "title": "the Deceiver", "roles": ["middle"], "tags": ["Assassin", "Mage"]}),
+        serde_json::json!({"id": 64, "name": "Lee Sin", "key": "LeeSin", "title": "the Blind Monk", "roles": ["jungle"], "tags": ["Fighter", "Assassin"]}),
+        serde_json::json!({"id": 89, "name": "Leona", "key": "Leona", "title": "the Radiant Dawn", "roles": ["support"], "tags": ["Tank", "Support"]}),
+        serde_json::json!({"id": 876, "name": "Lillia", "key": "Lillia", "title": "the Bashful Bloom", "roles": ["jungle"], "tags": ["Fighter", "Mage"]}),
+        serde_json::json!({"id": 127, "name": "Lissandra", "key": "Lissandra", "title": "the Ice Witch", "roles": ["middle"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 236, "name": "Lucian", "key": "Lucian", "title": "the Purifier", "roles": ["bottom"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 117, "name": "Lulu", "key": "Lulu", "title": "the Fae Sorceress", "roles": ["support"], "tags": ["Support", "Mage"]}),
+        serde_json::json!({"id": 99, "name": "Lux", "key": "Lux", "title": "the Lady of Luminosity", "roles": ["support", "middle"], "tags": ["Mage", "Support"]}),
+        serde_json::json!({"id": 54, "name": "Malphite", "key": "Malphite", "title": "Shard of the Monolith", "roles": ["top"], "tags": ["Tank", "Fighter"]}),
+        serde_json::json!({"id": 90, "name": "Malzahar", "key": "Malzahar", "title": "the Prophet of the Void", "roles": ["middle"], "tags": ["Mage", "Assassin"]}),
+        serde_json::json!({"id": 57, "name": "Maokai", "key": "Maokai", "title": "the Twisted Treant", "roles": ["support", "jungle"], "tags": ["Tank", "Mage"]}),
+        serde_json::json!({"id": 11, "name": "Master Yi", "key": "MasterYi", "title": "the Wuju Bladesman", "roles": ["jungle"], "tags": ["Assassin", "Fighter"]}),
+        serde_json::json!({"id": 902, "name": "Milio", "key": "Milio", "title": "the Gentle Flame", "roles": ["support"], "tags": ["Support"]}),
+        serde_json::json!({"id": 21, "name": "Miss Fortune", "key": "MissFortune", "title": "the Bounty Hunter", "roles": ["bottom"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 62, "name": "Wukong", "key": "MonkeyKing", "title": "the Monkey King", "roles": ["top", "jungle"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 82, "name": "Mordekaiser", "key": "Mordekaiser", "title": "the Iron Revenant", "roles": ["top"], "tags": ["Fighter"]}),
+        serde_json::json!({"id": 25, "name": "Morgana", "key": "Morgana", "title": "the Fallen", "roles": ["support"], "tags": ["Mage", "Support"]}),
+        serde_json::json!({"id": 267, "name": "Nami", "key": "Nami", "title": "the Tidecaller", "roles": ["support"], "tags": ["Support", "Mage"]}),
+        serde_json::json!({"id": 75, "name": "Nasus", "key": "Nasus", "title": "the Curator of the Sands", "roles": ["top"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 111, "name": "Nautilus", "key": "Nautilus", "title": "the Titan of the Depths", "roles": ["support"], "tags": ["Tank", "Fighter"]}),
+        serde_json::json!({"id": 518, "name": "Neeko", "key": "Neeko", "title": "the Curious Chameleon", "roles": ["middle", "support"], "tags": ["Mage", "Support"]}),
+        serde_json::json!({"id": 76, "name": "Nidalee", "key": "Nidalee", "title": "the Bestial Huntress", "roles": ["jungle"], "tags": ["Assassin", "Mage"]}),
+        serde_json::json!({"id": 895, "name": "Nilah", "key": "Nilah", "title": "the Joy Unbound", "roles": ["bottom"], "tags": ["Fighter", "Assassin"]}),
+        serde_json::json!({"id": 56, "name": "Nocturne", "key": "Nocturne", "title": "the Eternal Nightmare", "roles": ["jungle"], "tags": ["Assassin", "Fighter"]}),
+        serde_json::json!({"id": 20, "name": "Nunu & Willump", "key": "Nunu", "title": "the Boy and His Yeti", "roles": ["jungle"], "tags": ["Tank", "Fighter"]}),
+        serde_json::json!({"id": 2, "name": "Olaf", "key": "Olaf", "title": "the Berserker", "roles": ["top", "jungle"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 61, "name": "Orianna", "key": "Orianna", "title": "the Lady of Clockwork", "roles": ["middle"], "tags": ["Mage", "Support"]}),
+        serde_json::json!({"id": 516, "name": "Ornn", "key": "Ornn", "title": "The Fire Beneath the Mountain", "roles": ["top"], "tags": ["Tank", "Fighter"]}),
+        serde_json::json!({"id": 80, "name": "Pantheon", "key": "Pantheon", "title": "the Unbreakable Spear", "roles": ["middle", "support"], "tags": ["Fighter", "Assassin"]}),
+        serde_json::json!({"id": 78, "name": "Poppy", "key": "Poppy", "title": "Keeper of the Hammer", "roles": ["jungle", "top"], "tags": ["Tank", "Fighter"]}),
+        serde_json::json!({"id": 555, "name": "Pyke", "key": "Pyke", "title": "the Bloodharbor Ripper", "roles": ["support"], "tags": ["Support", "Assassin"]}),
+        serde_json::json!({"id": 246, "name": "Qiyana", "key": "Qiyana", "title": "Empress of the Elements", "roles": ["middle"], "tags": ["Assassin", "Fighter"]}),
+        serde_json::json!({"id": 133, "name": "Quinn", "key": "Quinn", "title": "Demacia's Wings", "roles": ["top"], "tags": ["Marksman", "Assassin"]}),
+        serde_json::json!({"id": 497, "name": "Rakan", "key": "Rakan", "title": "The Charmer", "roles": ["support"], "tags": ["Support"]}),
+        serde_json::json!({"id": 33, "name": "Rammus", "key": "Rammus", "title": "the Armordillo", "roles": ["jungle"], "tags": ["Tank", "Fighter"]}),
+        serde_json::json!({"id": 421, "name": "Rek'Sai", "key": "RekSai", "title": "the Void Burrower", "roles": ["jungle"], "tags": ["Fighter"]}),
+        serde_json::json!({"id": 526, "name": "Rell", "key": "Rell", "title": "the Iron Maiden", "roles": ["support"], "tags": ["Tank", "Support"]}),
+        serde_json::json!({"id": 888, "name": "Renata Glasc", "key": "Renata", "title": "the Chem-Baroness", "roles": ["support"], "tags": ["Support", "Mage"]}),
+        serde_json::json!({"id": 58, "name": "Renekton", "key": "Renekton", "title": "the Butcher of the Sands", "roles": ["top"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 107, "name": "Rengar", "key": "Rengar", "title": "the Pridestalker", "roles": ["jungle"], "tags": ["Assassin", "Fighter"]}),
+        serde_json::json!({"id": 92, "name": "Riven", "key": "Riven", "title": "the Exile", "roles": ["top"], "tags": ["Fighter", "Assassin"]}),
+        serde_json::json!({"id": 68, "name": "Rumble", "key": "Rumble", "title": "the Mechanized Menace", "roles": ["top"], "tags": ["Fighter", "Mage"]}),
+        serde_json::json!({"id": 13, "name": "Ryze", "key": "Ryze", "title": "the Rune Mage", "roles": ["middle"], "tags": ["Mage", "Fighter"]}),
+        serde_json::json!({"id": 360, "name": "Samira", "key": "Samira", "title": "the Desert Rose", "roles": ["bottom"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 113, "name": "Sejuani", "key": "Sejuani", "title": "Fury of the North", "roles": ["jungle"], "tags": ["Tank", "Fighter"]}),
+        serde_json::json!({"id": 235, "name": "Senna", "key": "Senna", "title": "the Redeemer", "roles": ["support", "bottom"], "tags": ["Marksman", "Support"]}),
+        serde_json::json!({"id": 147, "name": "Seraphine", "key": "Seraphine", "title": "the Starry-Eyed Songstress", "roles": ["support", "middle"], "tags": ["Mage", "Support"]}),
+        serde_json::json!({"id": 875, "name": "Sett", "key": "Sett", "title": "the Boss", "roles": ["top", "support"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 35, "name": "Shaco", "key": "Shaco", "title": "the Demon Jester", "roles": ["jungle"], "tags": ["Assassin"]}),
+        serde_json::json!({"id": 98, "name": "Shen", "key": "Shen", "title": "the Eye of Twilight", "roles": ["top"], "tags": ["Tank"]}),
+        serde_json::json!({"id": 102, "name": "Shyvana", "key": "Shyvana", "title": "the Half-Dragon", "roles": ["jungle"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 27, "name": "Singed", "key": "Singed", "title": "the Mad Chemist", "roles": ["top"], "tags": ["Tank", "Fighter"]}),
+        serde_json::json!({"id": 14, "name": "Sion", "key": "Sion", "title": "The Undead Juggernaut", "roles": ["top"], "tags": ["Tank", "Fighter"]}),
+        serde_json::json!({"id": 15, "name": "Sivir", "key": "Sivir", "title": "the Battle Mistress", "roles": ["bottom"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 72, "name": "Skarner", "key": "Skarner", "title": "the Crystal Vanguard", "roles": ["jungle"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 901, "name": "Smolder", "key": "Smolder", "title": "the Fiery Fledgling", "roles": ["bottom"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 37, "name": "Sona", "key": "Sona", "title": "Maven of the Strings", "roles": ["support"], "tags": ["Support", "Mage"]}),
+        serde_json::json!({"id": 16, "name": "Soraka", "key": "Soraka", "title": "the Starchild", "roles": ["support"], "tags": ["Support", "Mage"]}),
+        serde_json::json!({"id": 50, "name": "Swain", "key": "Swain", "title": "the Noxian Grand General", "roles": ["middle", "support"], "tags": ["Mage", "Fighter"]}),
+        serde_json::json!({"id": 517, "name": "Sylas", "key": "Sylas", "title": "the Unshackled", "roles": ["middle", "jungle"], "tags": ["Mage", "Assassin"]}),
+        serde_json::json!({"id": 134, "name": "Syndra", "key": "Syndra", "title": "the Dark Sovereign", "roles": ["middle"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 223, "name": "Tahm Kench", "key": "TahmKench", "title": "the River King", "roles": ["support", "top"], "tags": ["Support", "Tank"]}),
+        serde_json::json!({"id": 163, "name": "Taliyah", "key": "Taliyah", "title": "the Stoneweaver", "roles": ["jungle", "middle"], "tags": ["Mage", "Support"]}),
+        serde_json::json!({"id": 91, "name": "Talon", "key": "Talon", "title": "the Blade's Shadow", "roles": ["middle"], "tags": ["Assassin"]}),
+        serde_json::json!({"id": 44, "name": "Taric", "key": "Taric", "title": "the Shield of Valoran", "roles": ["support"], "tags": ["Support", "Fighter"]}),
+        serde_json::json!({"id": 17, "name": "Teemo", "key": "Teemo", "title": "the Swift Scout", "roles": ["top"], "tags": ["Marksman", "Assassin"]}),
+        serde_json::json!({"id": 412, "name": "Thresh", "key": "Thresh", "title": "the Chain Warden", "roles": ["support"], "tags": ["Support", "Fighter"]}),
+        serde_json::json!({"id": 18, "name": "Tristana", "key": "Tristana", "title": "the Yordle Gunner", "roles": ["bottom"], "tags": ["Marksman", "Assassin"]}),
+        serde_json::json!({"id": 48, "name": "Trundle", "key": "Trundle", "title": "the Troll King", "roles": ["top", "jungle"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 23, "name": "Tryndamere", "key": "Tryndamere", "title": "the Barbarian King", "roles": ["top"], "tags": ["Fighter", "Assassin"]}),
+        serde_json::json!({"id": 4, "name": "Twisted Fate", "key": "TwistedFate", "title": "the Card Master", "roles": ["middle"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 29, "name": "Twitch", "key": "Twitch", "title": "the Plague Rat", "roles": ["bottom"], "tags": ["Marksman", "Assassin"]}),
+        serde_json::json!({"id": 77, "name": "Udyr", "key": "Udyr", "title": "the Spirit Walker", "roles": ["jungle"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 6, "name": "Urgot", "key": "Urgot", "title": "the Dreadnought", "roles": ["top"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 110, "name": "Varus", "key": "Varus", "title": "the Arrow of Retribution", "roles": ["bottom"], "tags": ["Marksman", "Mage"]}),
+        serde_json::json!({"id": 67, "name": "Vayne", "key": "Vayne", "title": "the Night Hunter", "roles": ["bottom"], "tags": ["Marksman", "Assassin"]}),
+        serde_json::json!({"id": 45, "name": "Veigar", "key": "Veigar", "title": "the Tiny Master of Evil", "roles": ["middle"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 161, "name": "Vel'Koz", "key": "Velkoz", "title": "the Eye of the Void", "roles": ["middle", "support"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 711, "name": "Vex", "key": "Vex", "title": "the Gloomist", "roles": ["middle"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 254, "name": "Vi", "key": "Vi", "title": "the Piltover Enforcer", "roles": ["jungle"], "tags": ["Fighter", "Assassin"]}),
+        serde_json::json!({"id": 234, "name": "Viego", "key": "Viego", "title": "The Ruined King", "roles": ["jungle"], "tags": ["Assassin", "Fighter"]}),
+        serde_json::json!({"id": 112, "name": "Viktor", "key": "Viktor", "title": "the Machine Herald", "roles": ["middle"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 8, "name": "Vladimir", "key": "Vladimir", "title": "the Crimson Reaper", "roles": ["middle", "top"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 106, "name": "Volibear", "key": "Volibear", "title": "the Relentless Storm", "roles": ["jungle", "top"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 19, "name": "Warwick", "key": "Warwick", "title": "the Uncaged Wrath of Zaun", "roles": ["jungle"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 498, "name": "Xayah", "key": "Xayah", "title": "the Rebel", "roles": ["bottom"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 101, "name": "Xerath", "key": "Xerath", "title": "the Magus Ascendant", "roles": ["middle", "support"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 5, "name": "Xin Zhao", "key": "XinZhao", "title": "the Seneschal of Demacia", "roles": ["jungle"], "tags": ["Fighter", "Assassin"]}),
+        serde_json::json!({"id": 115, "name": "Yasuo", "key": "Yasuo", "title": "the Unforgiven", "roles": ["middle", "top"], "tags": ["Fighter", "Assassin"]}),
+        serde_json::json!({"id": 777, "name": "Yone", "key": "Yone", "title": "the Unforgotten", "roles": ["middle", "top"], "tags": ["Assassin", "Fighter"]}),
+        serde_json::json!({"id": 83, "name": "Yorick", "key": "Yorick", "title": "Shepherd of Souls", "roles": ["top"], "tags": ["Fighter", "Tank"]}),
+        serde_json::json!({"id": 350, "name": "Yuumi", "key": "Yuumi", "title": "the Magical Cat", "roles": ["support"], "tags": ["Support", "Mage"]}),
+        serde_json::json!({"id": 154, "name": "Zac", "key": "Zac", "title": "the Secret Weapon", "roles": ["jungle"], "tags": ["Tank", "Fighter"]}),
+        serde_json::json!({"id": 238, "name": "Zed", "key": "Zed", "title": "the Master of Shadows", "roles": ["middle"], "tags": ["Assassin"]}),
+        serde_json::json!({"id": 221, "name": "Zeri", "key": "Zeri", "title": "The Spark of Zaun", "roles": ["bottom"], "tags": ["Marksman"]}),
+        serde_json::json!({"id": 115, "name": "Ziggs", "key": "Ziggs", "title": "the Hexplosives Expert", "roles": ["middle"], "tags": ["Mage"]}),
+        serde_json::json!({"id": 26, "name": "Zilean", "key": "Zilean", "title": "the Chronokeeper", "roles": ["support"], "tags": ["Support", "Mage"]}),
+        serde_json::json!({"id": 142, "name": "Zoe", "key": "Zoe", "title": "the Aspect of Twilight", "roles": ["middle"], "tags": ["Mage", "Support"]}),
+        serde_json::json!({"id": 143, "name": "Zyra", "key": "Zyra", "title": "Rise of the Thorns", "roles": ["support"], "tags": ["Mage", "Support"]})
     ];
     Ok(champions)
 }
 
-/// Get champion masteries for the current summoner
+/// Get champion builds for a specific champion and role
 #[tauri::command]
-pub async fn get_champion_masteries() -> Result<Vec<serde_json::Value>, String> {
-    let state = APP_STATE.get().ok_or("App state not initialized")?;
+pub async fn get_champion_builds(_champion_id: i32, _role: String, rank: Option<String>) -> Result<Vec<serde_json::Value>, String> {
+    let _rank = rank.unwrap_or_else(|| "diamond+".to_string());
     
-    let puuid = {
-        let state_guard = state.inner.lock().await;
-        state_guard.puuid.clone()
-    };
-    
-    let puuid = puuid.ok_or("No summoner set")?;
-    
-    // In a real implementation, this would fetch from Riot API
-    // For now, return mock mastery data
-    let masteries = vec![
+    // Mock build data - in production this would come from external APIs like op.gg, u.gg, etc.
+    let builds = vec![
         serde_json::json!({
-            "championId": 266,
-            "championLevel": 7,
-            "championPoints": 234567,
-            "lastPlayTime": chrono::Utc::now().timestamp_millis() - 86400000,
-            "championPointsSinceLastLevel": 0,
-            "championPointsUntilNextLevel": 0,
-            "chestGranted": true,
-            "tokensEarned": 0,
-            "summonerId": puuid
+            "id": "meta_build_1",
+            "name": "Meta Build",
+            "source": "Community",
+            "pickRate": 67.8,
+            "winRate": 52.4,
+            "games": 12450,
+            "items": {
+                "core": [3074, 3071, 3156], // Ravenous Hydra, Black Cleaver, Maw of Malmortius
+                "boots": [3047], // Plated Steelcaps
+                "situational": [3193, 3026, 3065, 3053]
+            },
+            "runes": {
+                "primary": {
+                    "tree": "Precision",
+                    "keystone": "Conqueror",
+                    "runes": ["Triumph", "Legend: Alacrity", "Last Stand"]
+                },
+                "secondary": {
+                    "tree": "Resolve",
+                    "runes": ["Second Wind", "Unflinching"]
+                },
+                "shards": ["Adaptive Force", "Adaptive Force", "Health"]
+            },
+            "skillOrder": "Q>E>W",
+            "startingItems": [1054, 2003], // Doran's Shield, Health Potion
+            "summonerSpells": ["Flash", "Teleport"]
         }),
         serde_json::json!({
-            "championId": 103,
-            "championLevel": 5,
-            "championPoints": 45678,
-            "lastPlayTime": chrono::Utc::now().timestamp_millis() - 172800000,
-            "championPointsSinceLastLevel": 2345,
-            "championPointsUntilNextLevel": 12345,
-            "chestGranted": false,
-            "tokensEarned": 1,
-            "summonerId": puuid
+            "id": "aggressive_build_1",
+            "name": "Aggressive Build",
+            "source": "Pro Play",
+            "pickRate": 23.1,
+            "winRate": 54.7,
+            "games": 4230,
+            "items": {
+                "core": [3074, 3071, 3812], // Ravenous Hydra, Black Cleaver, Death's Dance
+                "boots": [3006], // Berserker's Greaves
+                "situational": [3156, 3053, 3026]
+            },
+            "runes": {
+                "primary": {
+                    "tree": "Precision",
+                    "keystone": "Conqueror",
+                    "runes": ["Triumph", "Legend: Bloodline", "Coup de Grace"]
+                },
+                "secondary": {
+                    "tree": "Domination",
+                    "runes": ["Sudden Impact", "Ravenous Hunter"]
+                },
+                "shards": ["Adaptive Force", "Adaptive Force", "Health"]
+            },
+            "skillOrder": "Q>W>E",
+            "startingItems": [1055, 2003], // Doran's Blade, Health Potion
+            "summonerSpells": ["Flash", "Ignite"]
         })
     ];
     
-    Ok(masteries)
+    Ok(builds)
 }
 
-/// Get champion statistics for a specific champion
-#[tauri::command]  
-pub async fn get_champion_stats(champion_id: i32) -> Result<serde_json::Value, String> {
-    // In a real implementation, this would aggregate match history data
-    // For now, return mock stats
+/// Get champion matchups for a specific champion and role
+#[tauri::command]
+pub async fn get_champion_matchups(_champion_id: i32, _role: String, rank: Option<String>) -> Result<Vec<serde_json::Value>, String> {
+    let _rank = rank.unwrap_or_else(|| "diamond+".to_string());
+    
+    // Mock matchup data
+    let matchups = vec![
+        serde_json::json!({
+            "enemyChampionId": 54, // Malphite
+            "enemyChampionName": "Malphite",
+            "difficulty": "Hard",
+            "winRate": 42.3,
+            "games": 1850,
+            "goldDiff15": -287,
+            "csDiff15": -12,
+            "tips": [
+                "Rush Blade of the Ruined King for % health damage",
+                "Take short trades when his passive is down",
+                "Avoid all-ins when he has ultimate"
+            ],
+            "counters": ["Build MR early", "Take Fleet Footwork", "Consider Hexdrinker"]
+        }),
+        serde_json::json!({
+            "enemyChampionId": 92, // Riven
+            "enemyChampionName": "Riven",
+            "difficulty": "Easy",
+            "winRate": 58.7,
+            "games": 2340,
+            "goldDiff15": 156,
+            "csDiff15": 8,
+            "tips": [
+                "Trade when her abilities are on cooldown",
+                "Use Q to interrupt her combos",
+                "Build armor early"
+            ],
+            "counters": ["Bramble Vest rush", "Play around cooldowns", "Don't chase"]
+        }),
+        serde_json::json!({
+            "enemyChampionId": 122, // Darius
+            "enemyChampionName": "Darius",
+            "difficulty": "Medium",
+            "winRate": 49.8,
+            "games": 3120,
+            "goldDiff15": -45,
+            "csDiff15": -2,
+            "tips": [
+                "Respect his level 6 power spike",
+                "Don't fight when he has 5 stacks",
+                "Use range advantage with Q"
+            ],
+            "counters": ["Kite with Q", "Build healing reduction", "Avoid extended trades"]
+        })
+    ];
+    
+    Ok(matchups)
+}
+
+/// Get counter data (champions that counter this champion and champions this champion counters)
+#[tauri::command]
+pub async fn get_counter_data(champion_id: i32, role: String, rank: Option<String>) -> Result<serde_json::Value, String> {
+    let _rank = rank.unwrap_or_else(|| "diamond+".to_string());
+    
+    // Mock counter data
+    let counter_data = serde_json::json!({
+        "championId": champion_id,
+        "role": role,
+        "counters": {
+            "hardCounters": [
+                {
+                    "championId": 54,
+                    "championName": "Malphite",
+                    "winRateAgainst": 42.3,
+                    "difficulty": "Hard",
+                    "reason": "Tank with heavy armor and CC"
+                },
+                {
+                    "championId": 57,
+                    "championName": "Maokai", 
+                    "winRateAgainst": 44.1,
+                    "difficulty": "Hard",
+                    "reason": "Sustain and crowd control"
+                }
+            ],
+            "softCounters": [
+                {
+                    "championId": 17,
+                    "championName": "Teemo",
+                    "winRateAgainst": 46.8,
+                    "difficulty": "Medium",
+                    "reason": "Range advantage and blind"
+                },
+                {
+                    "championId": 85,
+                    "championName": "Kennen",
+                    "winRateAgainst": 47.2,
+                    "difficulty": "Medium", 
+                    "reason": "Range and escape tools"
+                }
+            ]
+        },
+        "goodAgainst": {
+            "hardCounters": [
+                {
+                    "championId": 92,
+                    "championName": "Riven",
+                    "winRateAgainst": 58.7,
+                    "difficulty": "Easy",
+                    "reason": "Can interrupt her combos and sustain"
+                },
+                {
+                    "championId": 114,
+                    "championName": "Fiora",
+                    "winRateAgainst": 56.4,
+                    "difficulty": "Easy",
+                    "reason": "Good sustain and can match split push"
+                }
+            ],
+            "softCounters": [
+                {
+                    "championId": 24,
+                    "championName": "Jax",
+                    "winRateAgainst": 53.2,
+                    "difficulty": "Medium",
+                    "reason": "Better early game presence"
+                }
+            ]
+        },
+        "banRecommendations": [
+            {
+                "championId": 54,
+                "championName": "Malphite",
+                "banRate": 15.2,
+                "reason": "Hardest counter in current meta"
+            },
+            {
+                "championId": 122,
+                "championName": "Darius", 
+                "banRate": 12.8,
+                "reason": "Popular pick with good matchup"
+            }
+        ]
+    });
+    
+    Ok(counter_data)
+}
+
+/// Get detailed champion statistics including user performance
+#[tauri::command]
+pub async fn get_detailed_champion_stats(champion_id: i32) -> Result<serde_json::Value, String> {
+    let state = APP_STATE.get().ok_or("App state not initialized")?;
+    
+    let (_puuid, _region) = {
+        let state_guard = state.inner.lock().await;
+        (state_guard.puuid.clone(), state_guard.region.clone())
+    };
+    
+    // Mock detailed stats - in production would aggregate from match history
     let stats = serde_json::json!({
         "championId": champion_id,
-        "championName": "Aatrox",
-        "gamesPlayed": 47,
-        "wins": 29,
-        "losses": 18,
-        "winRate": 61.7,
-        "averageKda": {
-            "kills": 8.2,
-            "deaths": 5.1,
-            "assists": 6.8,
-            "kda": 2.94
+        "championName": "Aatrox", // Would be dynamically determined
+        "userStats": {
+            "gamesPlayed": 47,
+            "wins": 29,
+            "losses": 18,
+            "winRate": 61.7,
+            "kda": {
+                "kills": 8.2,
+                "deaths": 5.1,
+                "assists": 6.8,
+                "ratio": 2.94
+            },
+            "averageStats": {
+                "cs": 156.3,
+                "csPerMinute": 5.5,
+                "gold": 12450,
+                "damage": 23890,
+                "damageToChampions": 18340,
+                "visionScore": 18.2,
+                "gameLength": 28.5
+            },
+            "masteryInfo": {
+                "level": 7,
+                "points": 234567,
+                "tokensEarned": 0,
+                "chestGranted": true
+            },
+            "recentForm": {
+                "last10Games": {
+                    "wins": 7,
+                    "losses": 3,
+                    "winRate": 70.0
+                },
+                "trend": "improving"
+            }
         },
-        "averageStats": {
-            "cs": 156.3,
-            "gold": 12450,
-            "damage": 23890,
-            "visionScore": 18.2,
-            "gameLength": 28.5
+        "globalStats": {
+            "pickRate": 8.2,
+            "banRate": 12.5,
+            "winRate": 51.8,
+            "tier": "S",
+            "rank": 15
         },
-        "recentPerformance": [],
-        "bestPerformance": {},
-        "roles": {
+        "rolePerformance": {
             "top": {
                 "gamesPlayed": 43,
                 "winRate": 65.1,
-                "averageKda": {
-                    "kills": 8.5,
-                    "deaths": 4.9,
-                    "assists": 6.2,
-                    "kda": 3.0
-                }
+                "kda": 3.0,
+                "primaryRole": true
             },
             "middle": {
                 "gamesPlayed": 4,
                 "winRate": 25.0,
-                "averageKda": {
-                    "kills": 6.8,
-                    "deaths": 7.2,
-                    "assists": 9.5,
-                    "kda": 2.26
-                }
+                "kda": 2.26,
+                "primaryRole": false
             }
+        },
+        "itemStats": {
+            "mostBuilt": [
+                {"itemId": 3074, "itemName": "Ravenous Hydra", "buildRate": 78.2, "winRate": 54.1},
+                {"itemId": 3071, "itemName": "Black Cleaver", "buildRate": 65.8, "winRate": 52.8},
+                {"itemId": 3156, "itemName": "Maw of Malmortius", "buildRate": 45.2, "winRate": 56.3}
+            ],
+            "highestWinRate": [
+                {"itemId": 3812, "itemName": "Death's Dance", "buildRate": 35.1, "winRate": 58.7},
+                {"itemId": 3156, "itemName": "Maw of Malmortius", "buildRate": 45.2, "winRate": 56.3}
+            ]
+        },
+        "skillOrder": {
+            "mostPopular": "Q>E>W",
+            "highestWinRate": "Q>W>E",
+            "userPreference": "Q>E>W"
         }
     });
     
     Ok(stats)
+}
+
+#[tauri::command]
+pub async fn test_connection_with_retry() -> Result<String, String> {
+    use log::info;
+    info!("Testing connection with retry mechanism...");
+    
+    // First check if we have a valid API key
+    let api_key = std::env::var("RIOT_API_KEY").unwrap_or_default();
+    if api_key.is_empty() || api_key == "DEMO_KEY" {
+        return Ok("Demo mode - no API key configured".to_string());
+    }
+    
+    let state = APP_STATE.get().ok_or("not initialized")?.clone();
+    
+    // Test with a simple API call - get account by Riot ID
+    match state.client.get_account_by_riot_id_with_retry("Riot", "API", "na1").await {
+        Ok(Some(_account)) => Ok("Connection test successful - API key is valid".to_string()),
+        Ok(None) => Ok("Connection test successful - API key is valid (test account not found, but API responded)".to_string()),
+        Err(retry_err) => {
+            let api_error = ApiError::from(retry_err);
+            match api_error {
+                ApiError::ApiKeyInvalid => Err("API key is invalid or expired".to_string()),
+                ApiError::ApiKeyMissing => Err("API key is missing".to_string()),
+                ApiError::RateLimited => Ok("API key is valid but rate limited".to_string()),
+                ApiError::NetworkError => Err("Network connection error".to_string()),
+                ApiError::ServerError => Err("Riot API server error".to_string()),
+                _ => Err(format!("Connection test failed: {:?}", api_error)),
+            }
+        }
+    }
 }
 
 

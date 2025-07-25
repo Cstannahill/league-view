@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
     Box,
     VStack,
@@ -15,7 +15,7 @@ import {
     Divider,
     Icon
 } from '@chakra-ui/react';
-import { FaFire, FaShieldAlt, FaStar, FaTrophy } from 'react-icons/fa';
+import { FaTrophy, FaArrowUp, FaArrowDown, FaMinus } from 'react-icons/fa';
 import { PerformanceData } from '../../store';
 
 interface Props {
@@ -32,35 +32,34 @@ const PerformanceInsights: React.FC<Props> = ({ data }) => {
             </Box>
         );
     }
+    const { average_kda, win_rate, total_lp_gain, games_analyzed, playstyle_traits, win_rate_trend = 'stable' } = data as any;
+    const kdaRatio = useMemo(() => average_kda.deaths > 0 ? (average_kda.kills + average_kda.assists) / average_kda.deaths : average_kda.kills + average_kda.assists, [average_kda]);
 
-    const { average_kda, win_rate, total_lp_gain, games_analyzed, recent_form, playstyle_traits } = data;
-    const kdaRatio = average_kda.deaths > 0 ? (average_kda.kills + average_kda.assists) / average_kda.deaths : average_kda.kills + average_kda.assists;
+    // Removed unused getFormIcon
 
-
-
-    const getFormIcon = (form: string) => {
-        switch (form) {
-            case 'hot': return FaFire;
-            case 'cold': return FaShieldAlt;
-            default: return FaStar;
+    const getTrendIcon = (trend: string) => {
+        switch (trend) {
+            case 'up': return FaArrowUp;
+            case 'down': return FaArrowDown;
+            default: return FaMinus;
         }
     };
 
     return (
-        <Box p={4} bg="gray.700" borderRadius="lg" border="1px solid" borderColor="gray.600">
+        <Box>
             <HStack mb={4} align="center">
                 <Icon as={FaTrophy} color="yellow.400" />
                 <Text fontSize="lg" fontWeight="bold" color="white">
                     Performance Insights
                 </Text>
                 <Badge
-                    colorScheme={recent_form === 'hot' ? 'red' : recent_form === 'cold' ? 'blue' : 'gray'}
+                    colorScheme={win_rate_trend === 'up' ? 'green' : win_rate_trend === 'down' ? 'red' : 'gray'}
                     display="flex"
                     alignItems="center"
                     gap={1}
                 >
-                    <Icon as={getFormIcon(recent_form)} boxSize={2} />
-                    {recent_form === 'hot' ? 'Hot Streak' : recent_form === 'cold' ? 'Cold Streak' : 'Neutral'}
+                    <Icon as={getTrendIcon(win_rate_trend)} boxSize={3} mr={1} />
+                    {win_rate_trend === 'up' ? 'Win Rate Up' : win_rate_trend === 'down' ? 'Win Rate Down' : 'Stable'}
                 </Badge>
             </HStack>
 

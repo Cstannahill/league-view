@@ -84,14 +84,19 @@ export const useStore = create<AppState>((set) => ({
   setDashboard: (dashboard) => set({ dashboard }),
   setMatchData: (matchData) => set({ matchData }),
   setSummoner: async (gameName, tagLine, region) => {
-    console.log("Setting summoner:", gameName, tagLine, region);
-    await invoke("set_tracked_summoner", { gameName, tagLine, region });
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(
-        "summoner",
-        JSON.stringify({ gameName, tagLine, region })
-      );
+    if (
+      gameName === stored?.gameName &&
+      tagLine === stored?.tagLine &&
+      region === stored?.region
+    ) {
+      return;
     }
     set({ gameName, tagLine, region });
+    try {
+      const data = await invoke("refresh_dashboard");
+      set({ dashboard: data as DashboardStats });
+    } catch (error) {
+      console.error("Failed to refresh dashboard:", error);
+    }
   },
 }));

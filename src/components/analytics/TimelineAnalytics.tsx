@@ -1,26 +1,21 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
     Box,
     VStack,
     HStack,
     Text,
-    Card,
-    CardHeader,
-    CardBody,
-    Heading,
-    SimpleGrid,
+    Grid,
     Badge,
     Icon,
     Progress,
+    Divider,
     Stat,
     StatLabel,
     StatNumber,
     StatHelpText,
-    StatArrow,
-    Divider
+    StatArrow
 } from '@chakra-ui/react';
 import {
-    FaClock,
     FaChartLine,
     FaEye,
     FaTrophy
@@ -43,100 +38,98 @@ const TimelineAnalyticsComponent: React.FC<TimelineAnalyticsComponentProps> = ({
     timelineAnalytics,
     compactView = false
 }) => {
-    const phases = [
+    const phases = useMemo(() => [
         {
             name: 'Early Game',
             period: '0-15 min',
             data: timelineAnalytics.earlyGame,
-            color: 'green',
+            color: 'blue',
             icon: GiSwordman
         },
         {
             name: 'Mid Game',
-            period: '15-25 min',
+            period: '15-30 min',
             data: timelineAnalytics.midGame,
-            color: 'blue',
-            icon: GiStairsGoal
+            color: 'orange',
+            icon: GiCrosshair
         },
         {
             name: 'Late Game',
-            period: '25+ min',
+            period: '30+ min',
             data: timelineAnalytics.lateGame,
             color: 'purple',
             icon: GiShield
         }
-    ];
+    ], [timelineAnalytics]);
 
     const getBestPhase = () => {
-        return phases.reduce((best, phase) =>
-            phase.data.winRateInPhase > best.data.winRateInPhase ? phase : best
+        return phases.reduce(
+            (best, phase) =>
+                phase.data.winRateInPhase > best.data.winRateInPhase ? phase : best
         );
     };
 
     const getWeakestPhase = () => {
-        return phases.reduce((weakest, phase) =>
-            phase.data.winRateInPhase < weakest.data.winRateInPhase ? phase : weakest
+        return phases.reduce(
+            (weakest, phase) =>
+                phase.data.winRateInPhase < weakest.data.winRateInPhase ? phase : weakest
         );
     };
 
-    const bestPhase = getBestPhase();
-    const weakestPhase = getWeakestPhase();
+    const bestPhase = useMemo(() => getBestPhase(), [phases]);
+    const weakestPhase = useMemo(() => getWeakestPhase(), [phases]);
 
     return (
-        <Card>
-            <CardHeader>
-                <HStack justify="space-between">
-                    <HStack>
-                        <Icon as={FaClock} color="blue.400" />
-                        <Heading size="md">Timeline Performance</Heading>
-                    </HStack>
-                    <Badge colorScheme="blue" variant="outline">
-                        Game Phase Analysis
-                    </Badge>
+        <Box borderWidth="1px" borderRadius="lg" p={4}>
+            <HStack justify="space-between">
+                <HStack>
+                    {/* ...existing code... */}
                 </HStack>
-            </CardHeader>
-            <CardBody>
-                <VStack spacing={4} align="stretch">
-                    {/* Phase Overview Cards */}
-                    <SimpleGrid columns={{ base: 1, md: compactView ? 2 : 3 }} spacing={4}>
-                        {phases.map((phase) => (
-                            <PhaseCard
-                                key={phase.name}
-                                phase={phase}
-                                isStrongest={phase.name === bestPhase.name}
-                                isWeakest={phase.name === weakestPhase.name}
-                                compactView={compactView}
-                            />
-                        ))}
-                    </SimpleGrid>
+                <Badge colorScheme="blue" variant="outline">
+                    Game Phase Analysis
+                </Badge>
+            </HStack>
+            <Divider my={4} />
+            <VStack spacing={4} align="stretch">
+                {/* Phase Overview Cards */}
+                <Grid templateColumns={{ base: '1fr', md: compactView ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)' }} gap={4}>
+                    {phases.map((phase: any) => (
+                        <PhaseCard
+                            key={phase.name}
+                            phase={phase}
+                            isStrongest={phase.name === bestPhase.name}
+                            isWeakest={phase.name === weakestPhase.name}
+                            compactView={compactView}
+                        />
+                    ))}
+                </Grid>
 
-                    {!compactView && (
-                        <>
-                            <Divider />
+                {!compactView && (
+                    <>
+                        <Divider />
 
-                            {/* Detailed Phase Comparison */}
-                            <Box>
-                                <Text fontWeight="semibold" fontSize="md" mb={4}>
-                                    Phase Performance Breakdown
-                                </Text>
-                                <PhaseComparisonTable phases={phases} />
-                            </Box>
+                        {/* Detailed Phase Comparison */}
+                        <Box>
+                            <Text fontWeight="semibold" fontSize="md" mb={4}>
+                                Phase Performance Breakdown
+                            </Text>
+                            <PhaseComparisonTable phases={phases} />
+                        </Box>
 
-                            <Divider />
+                        <Divider />
 
-                            {/* Timeline Insights */}
-                            <TimelineInsights
-                                bestPhase={bestPhase}
-                                weakestPhase={weakestPhase}
-                                timelineAnalytics={timelineAnalytics}
-                            />
-                        </>
-                    )}
-                </VStack>
-            </CardBody>
-        </Card>
+                        {/* Timeline Insights */}
+                        <TimelineInsights
+                            bestPhase={bestPhase}
+                            weakestPhase={weakestPhase}
+                            timelineAnalytics={timelineAnalytics}
+                        />
+                    </>
+                )}
+            </VStack>
+        </Box>
     );
-};
+}
 
 interface PhaseCardProps {
     phase: {
@@ -226,35 +219,35 @@ const PhaseCard: React.FC<PhaseCardProps> = ({
                     </VStack>
                 </HStack>
 
-                <SimpleGrid columns={2} spacing={2}>
-                    <Stat size="sm">
-                        <StatLabel fontSize="xs">KDA</StatLabel>
-                        <StatNumber fontSize="sm">{kda.toFixed(1)}</StatNumber>
-                    </Stat>
-                    <Stat size="sm">
-                        <StatLabel fontSize="xs">Gold Diff</StatLabel>
-                        <StatNumber fontSize="sm" color={phase.data.avgGoldDiff >= 0 ? 'green.500' : 'red.500'}>
+                <Grid templateColumns="repeat(2, 1fr)" gap={2}>
+                    <Box>
+                        <Text fontSize="xs" fontWeight="medium">KDA</Text>
+                        <Text fontSize="sm">{kda.toFixed(1)}</Text>
+                    </Box>
+                    <Box>
+                        <Text fontSize="xs" fontWeight="medium">Gold Diff</Text>
+                        <Text fontSize="sm" color={phase.data.avgGoldDiff >= 0 ? 'green.500' : 'red.500'}>
                             {phase.data.avgGoldDiff >= 0 ? '+' : ''}{phase.data.avgGoldDiff}
-                        </StatNumber>
-                    </Stat>
-                </SimpleGrid>
+                        </Text>
+                    </Box>
+                </Grid>
 
                 {!compactView && (
                     <>
-                        <SimpleGrid columns={2} spacing={2}>
-                            <Stat size="sm">
-                                <StatLabel fontSize="xs">CS Diff</StatLabel>
-                                <StatNumber fontSize="sm" color={phase.data.avgCSDiff >= 0 ? 'green.500' : 'red.500'}>
+                        <Grid templateColumns="repeat(2, 1fr)" gap={2}>
+                            <Box>
+                                <Text fontSize="xs" fontWeight="medium">CS Diff</Text>
+                                <Text fontSize="sm" color={phase.data.avgCSDiff >= 0 ? 'green.500' : 'red.500'}>
                                     {phase.data.avgCSDiff >= 0 ? '+' : ''}{phase.data.avgCSDiff}
-                                </StatNumber>
-                            </Stat>
-                            <Stat size="sm">
-                                <StatLabel fontSize="xs">Dmg Share</StatLabel>
-                                <StatNumber fontSize="sm">
+                                </Text>
+                            </Box>
+                            <Box>
+                                <Text fontSize="xs" fontWeight="medium">Dmg Share</Text>
+                                <Text fontSize="sm">
                                     {(phase.data.avgDamageShare * 100).toFixed(0)}%
-                                </StatNumber>
-                            </Stat>
-                        </SimpleGrid>
+                                </Text>
+                            </Box>
+                        </Grid>
 
                         <Box>
                             <HStack justify="space-between" mb={1}>
@@ -297,10 +290,10 @@ const PhaseComparisonTable: React.FC<PhaseComparisonTableProps> = ({ phases }) =
 
     return (
         <Box overflowX="auto">
-            <SimpleGrid columns={4} spacing={2} minW="600px">
+            <Grid templateColumns="repeat(4, 1fr)" gap={2} minW="600px">
                 {/* Header */}
                 <Box></Box>
-                {phases.map((phase) => (
+                {phases.map((phase: any) => (
                     <Text key={phase.name} fontSize="sm" fontWeight="bold" textAlign="center">
                         {phase.name}
                     </Text>
@@ -315,7 +308,7 @@ const PhaseComparisonTable: React.FC<PhaseComparisonTableProps> = ({ phases }) =
                                 {metric.label}
                             </Text>
                         </HStack>
-                        {phases.map((phase) => {
+                        {phases.map((phase: any) => {
                             const value = (phase.data as any)[metric.key];
                             const displayValue = metric.key === 'objectiveParticipation'
                                 ? (value * 100).toFixed(0)
@@ -340,7 +333,7 @@ const PhaseComparisonTable: React.FC<PhaseComparisonTableProps> = ({ phases }) =
                         })}
                     </React.Fragment>
                 ))}
-            </SimpleGrid>
+            </Grid>
         </Box>
     );
 };
@@ -425,7 +418,7 @@ const TimelineInsights: React.FC<TimelineInsightsProps> = ({
                     </Box>
                 ))}
 
-                <SimpleGrid columns={{ base: 1, md: 3 }} spacing={4} mt={4}>
+                <Grid templateColumns={{ base: '1fr', md: 'repeat(3, 1fr)' }} gap={4} mt={4}>
                     <Stat>
                         <StatLabel>
                             <HStack>
@@ -474,7 +467,7 @@ const TimelineInsights: React.FC<TimelineInsightsProps> = ({
                             Average participation
                         </StatHelpText>
                     </Stat>
-                </SimpleGrid>
+                </Grid>
             </VStack>
         </Box>
     );

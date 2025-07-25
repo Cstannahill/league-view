@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
     Box,
     VStack,
@@ -32,21 +32,25 @@ const ChampionMatchupAnalysis: React.FC<ChampionMatchupAnalysisProps> = ({
     championAnalytics,
     compactView = false
 }) => {
-    const topChampions = championAnalytics
-        .sort((a, b) => b.totalGames - a.totalGames)
-        .slice(0, compactView ? 3 : 6);
+    const topChampions = useMemo(() => {
+        return championAnalytics
+            .sort((a, b) => b.totalGames - a.totalGames)
+            .slice(0, compactView ? 3 : 6);
+    }, [championAnalytics, compactView]);
+
+    const noDataMessage = useMemo(() => (
+        <Card>
+            <CardHeader>
+                <Heading size="md">Champion Matchup Analysis</Heading>
+            </CardHeader>
+            <CardBody>
+                <Text color="gray.500">No champion data available for matchup analysis.</Text>
+            </CardBody>
+        </Card>
+    ), []);
 
     if (topChampions.length === 0) {
-        return (
-            <Card>
-                <CardHeader>
-                    <Heading size="md">Champion Matchup Analysis</Heading>
-                </CardHeader>
-                <CardBody>
-                    <Text color="gray.500">No champion data available for matchup analysis.</Text>
-                </CardBody>
-            </Card>
-        );
+        return noDataMessage;
     }
 
     return (

@@ -47,7 +47,7 @@ interface AnalyticsSummaryProps {
 }
 
 const AnalyticsSummary: React.FC<AnalyticsSummaryProps> = ({ analytics }) => {
-    const calculateOverallRating = (): number => {
+    const calculateOverallRating = () => {
         const psychScore =
             (analytics.psychologyProfile.tiltResistance +
                 analytics.psychologyProfile.combackPotential +

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
     Box,
     VStack,
@@ -31,7 +31,6 @@ import {
     NumberInputStepper,
     NumberIncrementStepper,
     NumberDecrementStepper,
-    Skeleton,
     Alert,
     AlertIcon
 } from '@chakra-ui/react';
@@ -48,6 +47,7 @@ import {
 } from '../../types/champion';
 import { championService } from '../../services/championService';
 // import ChampionDetailView from './ChampionDetailView';
+import ChampionDetailView from './ChampionDetailView';
 
 interface ChampionsListProps {
     onChampionSelect?: (champion: Champion) => void;
@@ -57,8 +57,9 @@ const ChampionsList: React.FC<ChampionsListProps> = ({ onChampionSelect }) => {
     const [champions, setChampions] = useState<Champion[]>([]);
     const [masteries, setMasteries] = useState<ChampionMastery[]>([]);
     const [filteredChampions, setFilteredChampions] = useState<Champion[]>([]);
+    const [searchInput, setSearchInput] = useState('');
     const [selectedChampion, setSelectedChampion] = useState<Champion | null>(null);
-    const [loading, setLoading] = useState(true);
+    // Removed unused loading state
     const [sortBy, setSortBy] = useState<ChampionSortBy>(ChampionSortBy.NAME);
     const [sortAscending, setSortAscending] = useState(true);
     const [filters, setFilters] = useState<ChampionFilters>({
@@ -73,21 +74,32 @@ const ChampionsList: React.FC<ChampionsListProps> = ({ onChampionSelect }) => {
         loadData();
     }, []);
 
+    // Debounce search input
     useEffect(() => {
-        if (champions.length > 0) {
-            const filtered = championService.sortAndFilterChampions(
-                champions,
-                masteries,
-                sortBy,
-                filters,
-                sortAscending
-            );
-            setFilteredChampions(filtered);
-        }
+        const handler = setTimeout(() => {
+            setFilters((prev) => ({ ...prev, search: searchInput }));
+        }, 200);
+        return () => clearTimeout(handler);
+    }, [searchInput]);
+
+    // Memoize filtered champions
+
+    const memoizedFilteredChampions = useMemo(() => {
+        if (champions.length === 0) return [];
+        return championService.sortAndFilterChampions(
+            champions,
+            masteries,
+            sortBy,
+            filters,
+            sortAscending
+        );
     }, [champions, masteries, sortBy, sortAscending, filters]);
 
+    useEffect(() => {
+        setFilteredChampions(memoizedFilteredChampions);
+    }, [memoizedFilteredChampions]);
+
     const loadData = async () => {
-        setLoading(true);
         try {
             const [champData, masteryData] = await Promise.all([
                 championService.getAllChampions(),
@@ -98,7 +110,7 @@ const ChampionsList: React.FC<ChampionsListProps> = ({ onChampionSelect }) => {
         } catch (error) {
             console.error('Failed to load champions data:', error);
         } finally {
-            setLoading(false);
+            setFilteredChampions(champions);
         }
     };
 
@@ -133,20 +145,85 @@ const ChampionsList: React.FC<ChampionsListProps> = ({ onChampionSelect }) => {
         { value: ChampionRole.SUPPORT, label: 'Support', color: 'cyan' }
     ];
 
-    if (loading) {
-        return (
-            <Box p={4}>
-                <VStack spacing={4}>
-                    <Skeleton height="60px" />
-                    <SimpleGrid columns={{ base: 2, md: 4, lg: 6 }} spacing={4} w="full">
-                        {[...Array(12)].map((_, i) => (
-                            <Skeleton key={i} height="120px" borderRadius="md" />
-                        ))}
-                    </SimpleGrid>
-                </VStack>
-            </Box>
-        );
+    // Memoized Champion Card with proper props
+    interface ChampionCardProps {
+        champion: Champion;
+        masteryLevel: number;
+        masteryPoints: number;
+        onClick: (champion: Champion) => void;
     }
+    const ChampionCard = useCallback(
+        React.memo(({ champion, masteryLevel, masteryPoints, onClick }: ChampionCardProps) => (
+            <Card
+                key={champion.id}
+                cursor="pointer"
+                onClick={() => onClick(champion)}
+                _hover={{ transform: 'scale(1.05)', shadow: 'lg' }}
+                transition="all 0.2s"
+                position="relative"
+            >
+                <CardBody p={2}>
+                    <VStack spacing={2}>
+                        {/* Champion Image */}
+                        <Box position="relative">
+                            <Image
+                                src={champion.squareUrl || champion.image}
+                                alt={champion.name}
+                                boxSize="60px"
+                                borderRadius="md"
+                                fallbackSrc="https://via.placeholder.com/60x60?text=?"
+                            />
+                            {masteryLevel > 0 && (
+                                <Badge
+                                    position="absolute"
+                                    top="-2"
+                                    right="-2"
+                                    colorScheme={masteryLevel >= 7 ? 'purple' : masteryLevel >= 5 ? 'gold' : 'blue'}
+                                    borderRadius="full"
+                                    fontSize="xs"
+                                >
+                                    {masteryLevel}
+                                </Badge>
+                            )}
+                        </Box>
+                        {/* Champion Name */}
+                        <Tooltip label={champion.title}>
+                            <Text
+                                fontSize="sm"
+                                fontWeight="semibold"
+                                textAlign="center"
+                                noOfLines={1}
+                            >
+                                {champion.name}
+                            </Text>
+                        </Tooltip>
+                        {/* Roles */}
+                        <HStack justify="center" wrap="wrap">
+                            {champion.roles.map((role: ChampionRole) => {
+                                const roleOption = roleOptions.find(r => r.value === role);
+                                return (
+                                    <Badge
+                                        key={role}
+                                        colorScheme={roleOption?.color || 'gray'}
+                                        size="xs"
+                                    >
+                                        {roleOption?.label || role}
+                                    </Badge>
+                                );
+                            })}
+                        </HStack>
+                        {/* Mastery Info */}
+                        {masteryPoints > 0 && (
+                            <Text fontSize="xs" color="gray.500" textAlign="center">
+                                {masteryPoints.toLocaleString()} pts
+                            </Text>
+                        )}
+                    </VStack>
+                </CardBody>
+            </Card>
+        )),
+        []
+    );
 
     return (
         <Box p={4}>
@@ -177,8 +254,8 @@ const ChampionsList: React.FC<ChampionsListProps> = ({ onChampionSelect }) => {
                                     </InputLeftElement>
                                     <Input
                                         placeholder="Search by name..."
-                                        value={filters.search}
-                                        onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+                                        value={searchInput}
+                                        onChange={(e) => setSearchInput(e.target.value)}
                                     />
                                 </InputGroup>
                             </FormControl>
@@ -248,78 +325,14 @@ const ChampionsList: React.FC<ChampionsListProps> = ({ onChampionSelect }) => {
                         {filteredChampions.map((champion) => {
                             const masteryLevel = getMasteryLevel(champion.id);
                             const masteryPoints = getMasteryPoints(champion.id);
-
                             return (
-                                <Card
+                                <ChampionCard
                                     key={champion.id}
-                                    cursor="pointer"
-                                    onClick={() => handleChampionClick(champion)}
-                                    _hover={{ transform: 'scale(1.05)', shadow: 'lg' }}
-                                    transition="all 0.2s"
-                                    position="relative"
-                                >
-                                    <CardBody p={2}>
-                                        <VStack spacing={2}>
-                                            {/* Champion Image */}
-                                            <Box position="relative">
-                                                <Image
-                                                    src={champion.squareUrl || champion.image}
-                                                    alt={champion.name}
-                                                    boxSize="60px"
-                                                    borderRadius="md"
-                                                    fallbackSrc="https://via.placeholder.com/60x60?text=?"
-                                                />
-                                                {masteryLevel > 0 && (
-                                                    <Badge
-                                                        position="absolute"
-                                                        top="-2"
-                                                        right="-2"
-                                                        colorScheme={masteryLevel >= 7 ? 'purple' : masteryLevel >= 5 ? 'gold' : 'blue'}
-                                                        borderRadius="full"
-                                                        fontSize="xs"
-                                                    >
-                                                        {masteryLevel}
-                                                    </Badge>
-                                                )}
-                                            </Box>
-
-                                            {/* Champion Name */}
-                                            <Tooltip label={champion.title}>
-                                                <Text
-                                                    fontSize="sm"
-                                                    fontWeight="semibold"
-                                                    textAlign="center"
-                                                    noOfLines={1}
-                                                >
-                                                    {champion.name}
-                                                </Text>
-                                            </Tooltip>
-
-                                            {/* Roles */}
-                                            <HStack justify="center" wrap="wrap">
-                                                {champion.roles.map(role => {
-                                                    const roleOption = roleOptions.find(r => r.value === role);
-                                                    return (
-                                                        <Badge
-                                                            key={role}
-                                                            colorScheme={roleOption?.color || 'gray'}
-                                                            size="xs"
-                                                        >
-                                                            {roleOption?.label || role}
-                                                        </Badge>
-                                                    );
-                                                })}
-                                            </HStack>
-
-                                            {/* Mastery Info */}
-                                            {masteryPoints > 0 && (
-                                                <Text fontSize="xs" color="gray.500" textAlign="center">
-                                                    {masteryPoints.toLocaleString()} pts
-                                                </Text>
-                                            )}
-                                        </VStack>
-                                    </CardBody>
-                                </Card>
+                                    champion={champion}
+                                    masteryLevel={masteryLevel}
+                                    masteryPoints={masteryPoints}
+                                    onClick={handleChampionClick}
+                                />
                             );
                         })}
                     </SimpleGrid>
@@ -351,7 +364,7 @@ const ChampionsList: React.FC<ChampionsListProps> = ({ onChampionSelect }) => {
                     <ModalCloseButton />
                     <ModalBody pb={6}>
                         {selectedChampion && (
-                            <Text>Champion details will be shown here: {selectedChampion.name}</Text>
+                            <ChampionDetailView champion={selectedChampion} />
                         )}
                     </ModalBody>
                 </ModalContent>

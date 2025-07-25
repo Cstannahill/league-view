@@ -1,6 +1,8 @@
 import { Box, HStack, VStack, Tag, Text, Badge, Flex, Spacer, Icon } from '@chakra-ui/react';
 import { FaCrown, FaFire, FaSnowflake, FaTrophy } from 'react-icons/fa';
 import { BadgeCalculationService, MockDataGenerator } from '../../services/badgeService';
+import { championAssets } from '../../services/championAssetService';
+import { ChampionImage } from '../common/ChampionImage';
 import { useMemo } from 'react';
 
 interface Props {
@@ -34,6 +36,10 @@ export default function PlayerCard({ player, ranked, traits }: Props) {
   const isRanked = entry && entry.tier;
   const winRate = entry ? ((entry.wins / (entry.wins + entry.losses)) * 100).toFixed(1) : null;
 
+  // Get champion information
+  const champion = championAssets.getChampionById(player.championId);
+  const championName = champion?.name || `Champion ${player.championId}`;
+
   // Generate mock player stats and calculate badges for demonstration
   const playerBadges = useMemo(() => {
     const mockStats = MockDataGenerator.generateMockPlayerStats(player.role || 'mid');
@@ -54,15 +60,24 @@ export default function PlayerCard({ player, ranked, traits }: Props) {
     >
       <VStack align="start" spacing={2}>
         {/* Player Name and Champion */}
-        <Flex w="full" align="center">
+        <Flex w="full" align="center" gap={3}>
+          {/* Champion Image */}
+          <ChampionImage 
+            championId={player.championId}
+            size="medium"
+            type="portrait"
+            borderRadius="md"
+          />
+          
           <VStack align="start" spacing={0} flex={1}>
             <Text fontWeight="bold" color="white" fontSize="sm" noOfLines={1}>
               {player.summonerName}
             </Text>
-            <Text fontSize="xs" color="gray.400">
-              Champion: {player.championId} {/* You might want to map this to champion name */}
+            <Text fontSize="xs" color="gray.400" noOfLines={1}>
+              {championName}
             </Text>
           </VStack>
+          
           {player.teamId === 100 && (
             <Icon as={FaCrown} color="blue.400" boxSize={3} />
           )}

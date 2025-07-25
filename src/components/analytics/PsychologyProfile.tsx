@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
     Box,
     VStack,
@@ -101,13 +101,13 @@ const PsychologyProfileComponent: React.FC<PsychologyProfileComponentProps> = ({
         }
     ];
 
-    const topTraits = psychTraits
+    const topTraits = useMemo(() => psychTraits
         .sort((a, b) => b.value - a.value)
-        .slice(0, 3);
+        .slice(0, 3), [psychTraits]);
 
-    const improvementAreas = psychTraits
+    const improvementAreas = useMemo(() => psychTraits
         .filter(trait => trait.value < 60)
-        .sort((a, b) => a.value - b.value);
+        .sort((a, b) => a.value - b.value), [psychTraits]);
 
     return (
         <Card>

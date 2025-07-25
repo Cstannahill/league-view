@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Card, CardHeader, CardBody, Heading, Text, HStack, Icon } from '@chakra-ui/react';
 import { FaChartLine } from 'react-icons/fa';
 import { SkillProgressionData } from '../../types/analytics';
@@ -12,6 +12,9 @@ const SkillProgressionComponent: React.FC<SkillProgressionComponentProps> = ({
     skillProgression,
     compactView = false
 }) => {
+    const memoizedStrengthAreas = useMemo(() => skillProgression.strengthAreas.join(', '), [skillProgression.strengthAreas]);
+    const memoizedImprovementAreas = useMemo(() => skillProgression.improvementAreas.join(', '), [skillProgression.improvementAreas]);
+
     return (
         <Card>
             <CardHeader>
@@ -33,10 +36,10 @@ const SkillProgressionComponent: React.FC<SkillProgressionComponentProps> = ({
                 {!compactView && (
                     <>
                         <Text>
-                            Strength Areas: {skillProgression.strengthAreas.join(', ')}
+                            Strength Areas: {memoizedStrengthAreas}
                         </Text>
                         <Text>
-                            Improvement Areas: {skillProgression.improvementAreas.join(', ')}
+                            Improvement Areas: {memoizedImprovementAreas}
                         </Text>
                     </>
                 )}

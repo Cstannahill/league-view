@@ -9,6 +9,7 @@ export interface Champion {
     tags: string[];
     splashUrl?: string; // Splash art URL
     squareUrl?: string; // Square icon URL
+    iconUrl?: string; // Small icon URL
 }
 
 export enum ChampionRole {
@@ -34,6 +35,76 @@ export interface ChampionMastery {
 export interface ChampionStats {
     championId: number;
     championName: string;
+    userStats?: {
+        gamesPlayed: number;
+        wins: number;
+        losses: number;
+        winRate: number;
+        kda: {
+            kills: number;
+            deaths: number;
+            assists: number;
+            ratio: number;
+        };
+        averageStats: {
+            cs: number;
+            csPerMinute: number;
+            gold: number;
+            damage: number;
+            damageToChampions: number;
+            visionScore: number;
+            gameLength: number;
+        };
+        masteryInfo: {
+            level: number;
+            points: number;
+            tokensEarned: number;
+            chestGranted: boolean;
+        };
+        recentForm: {
+            last10Games: {
+                wins: number;
+                losses: number;
+                winRate: number;
+            };
+            trend: string;
+        };
+    };
+    globalStats?: {
+        pickRate: number;
+        banRate: number;
+        winRate: number;
+        tier: string;
+        rank: number;
+    };
+    rolePerformance?: {
+        [key: string]: {
+            gamesPlayed: number;
+            winRate: number;
+            kda: number;
+            primaryRole: boolean;
+        };
+    };
+    itemStats?: {
+        mostBuilt: Array<{
+            itemId: number;
+            itemName: string;
+            buildRate: number;
+            winRate: number;
+        }>;
+        highestWinRate: Array<{
+            itemId: number;
+            itemName: string;
+            buildRate: number;
+            winRate: number;
+        }>;
+    };
+    skillOrder?: {
+        mostPopular: string;
+        highestWinRate: string;
+        userPreference: string;
+    };
+    // Legacy fields for backward compatibility
     gamesPlayed: number;
     wins: number;
     losses: number;
@@ -81,18 +152,40 @@ export interface ChampionMatchHistory {
 
 // Build system types
 export interface ChampionBuild {
-    id: string;
+    id?: string;
     name: string;
-    role: ChampionRole;
-    rank: string;
-    items: ItemBuild;
-    runes: RuneBuild;
-    skillOrder: SkillOrder;
-    spells: SummonerSpells;
-    winRate: number;
-    pickRate: number;
-    sampleSize: number;
-    sources: BuildSource[];
+    source?: string;
+    pickRate?: number;
+    winRate?: number;
+    games?: number;
+    role?: ChampionRole;
+    rank?: string;
+    items?: {
+        core?: number[];
+        boots?: number[];
+        situational?: number[];
+        starter?: number[];
+        luxury?: number[];
+        fullBuild?: number[];
+    };
+    runes?: {
+        primary?: {
+            tree: string;
+            keystone: string;
+            runes: string[];
+        };
+        secondary?: {
+            tree: string;
+            runes: string[];
+        };
+        shards?: string[];
+    };
+    skillOrder?: string;
+    startingItems?: number[];
+    summonerSpells?: string[];
+    sampleSize?: number;
+    sources?: BuildSource[];
+    spells?: SummonerSpells;
 }
 
 export interface ItemBuild {
@@ -137,7 +230,10 @@ export interface ChampionMatchup {
     enemyChampionName: string;
     role: ChampionRole;
     winRate: number;
-    gamesPlayed: number;
+    gamesPlayed?: number;
+    games?: number; // Alternative name for gamesPlayed
+    goldDiff15?: number;
+    csDiff15?: number;
     averageKda: { kills: number; deaths: number; assists: number };
     difficulty: MatchupDifficulty;
     tips: string[];
@@ -163,8 +259,46 @@ export enum MatchupDifficulty {
 }
 
 export interface CounterData {
-    counters: ChampionCounter[]; // Champions that counter this champion
-    countered: ChampionCounter[]; // Champions this champion counters
+    championId: number;
+    role: ChampionRole;
+    counters?: {
+        hardCounters: Array<{
+            championId: number;
+            championName: string;
+            winRateAgainst: number;
+            difficulty: string;
+            reason: string;
+        }>;
+        softCounters: Array<{
+            championId: number;
+            championName: string;
+            winRateAgainst: number;
+            difficulty: string;
+            reason: string;
+        }>;
+    };
+    goodAgainst?: {
+        hardCounters: Array<{
+            championId: number;
+            championName: string;
+            winRateAgainst: number;
+            difficulty: string;
+            reason: string;
+        }>;
+        softCounters: Array<{
+            championId: number;
+            championName: string;
+            winRateAgainst: number;
+            difficulty: string;
+            reason: string;
+        }>;
+    };
+    banRecommendations?: Array<{
+        championId: number;
+        championName: string;
+        banRate: number;
+        reason: string;
+    }>;
 }
 
 export interface ChampionCounter {

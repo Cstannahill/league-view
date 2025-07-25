@@ -1,25 +1,108 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { AnimatePresence, motion } from 'framer-motion';
+import { useToast, Box } from '@chakra-ui/react';
 import { useStore } from './store';
 import MatchView from './components/match/MatchView';
 import DashboardView from './components/dashboard/DashboardView';
 import PreMatchView from './components/match/PreMatchView';
 import ChampionsView from './components/champions/ChampionsView';
 import Navigation from './components/navigation/Navigation';
-
+import ConnectionStatus from './components/common/ConnectionStatus';
 
 function hasValidSummoner(gameName: string, tagLine: string, region: string) {
   return Boolean(gameName && tagLine && region);
 }
 
+// Memoized view components to prevent unnecessary re-renders
+const MemoizedDashboardView = React.memo(DashboardView);
+const MemoizedMatchView = React.memo(MatchView);
+const MemoizedPreMatchView = React.memo(PreMatchView);
+const MemoizedChampionsView = React.memo(ChampionsView);
+const MemoizedNavigation = React.memo(Navigation);
+const MemoizedConnectionStatus = React.memo(ConnectionStatus);
+
 function App() {
   const { mode, matchData, dashboard, setMode, setMatchData, setDashboard, gameName, tagLine, region, setSummoner } = useStore();
   const [initialized, setInitialized] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('connected');
+  const [matchTimeoutError, setMatchTimeoutError] = useState<string | null>(null);
+  const toast = useToast();
+
+  // Memoized values to prevent unnecessary re-computations
+  const showNavigation = useMemo(() => 
+    mode === 'dashboard' || mode === 'champions', 
+    [mode]
+  );
+
+  const hasValidSummonerMemo = useMemo(() =>
+    hasValidSummoner(gameName, tagLine, region),
+    [gameName, tagLine, region]
+  );
+
+  // Memoized callbacks to prevent function recreation on every render
+  const handleGameStarted = useCallback(() => {
+    console.log('Game started event received');
+    setMode('loading');
+  }, [setMode]);
+
+  const handleMatchData = useCallback((e: any) => {
+    console.log('Match data received:', e.payload);
+    if (!e.payload || typeof e.payload !== 'object') {
+      setMatchTimeoutError('Received invalid or empty match data from backend.');
+      return;
+    }
+    setMatchData(e.payload as any);
+    setMode('ingame');
+    setMatchTimeoutError(null);
+  }, [setMatchData, setMode]);
+
+  const handleGameEnded = useCallback(async () => {
+    console.log('Game ended event received');
+    setMode('dashboard');
+    try {
+      const data = await invoke('refresh_dashboard');
+      setDashboard(data as any);
+    } catch (error) {
+      console.error('Failed to refresh dashboard:', error);
+    }
+  }, [setMode, setDashboard]);
+
+  const handleConnectionError = useCallback((e: any) => {
+    console.warn('Connection error received:', e.payload);
+    const errorData = e.payload as any;
+    
+    if (errorData.reconnecting) {
+      setConnectionStatus('reconnecting');
+    } else {
+      setConnectionStatus('disconnected');
+      toast({
+        title: 'Connection Lost',
+        description: 'Lost connection to League of Legends client',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    }
+  }, [toast]);
+
+  const handleConnectionRestored = useCallback(() => {
+    console.log('Connection restored');
+    setConnectionStatus('connected');
+    toast({
+      title: 'Connection Restored',
+      description: 'Successfully reconnected to League of Legends client',
+      status: 'success',
+      duration: 3000,
+      isClosable: true,
+    });
+  }, [toast]);
+
 
   useEffect(() => {
     let unlistenFunctions: UnlistenFn[] = [];
+    let matchTimeout: ReturnType<typeof setTimeout> | null = null;
 
     // On mount, check for persisted summoner and load dashboard if present
     const initialize = async () => {
@@ -68,13 +151,19 @@ function App() {
         const unlistenStart = await listen('gameStarted', () => {
           console.log('Game started event received');
           setMode('loading');
+          setMatchTimeoutError(null);
+          // Start a timeout for match data
+          if (matchTimeout) clearTimeout(matchTimeout);
+          matchTimeout = setTimeout(() => {
+            setMatchTimeoutError('Timed out waiting for match data from backend.');
+          }, 10000); // 10 seconds
         });
 
         // Match data listener
         const unlistenMatch = await listen('matchData', (e) => {
           console.log('Match data received:', e.payload);
-          setMatchData(e.payload as any);
-          setMode('ingame');
+          if (matchTimeout) clearTimeout(matchTimeout);
+          handleMatchData(e);
         });
 
         // Game ended listener
@@ -89,27 +178,59 @@ function App() {
           }
         });
 
+        // Connection error listener
+        const unlistenConnectionError = await listen('connectionError', (e) => {
+          console.warn('Connection error received:', e.payload);
+          const errorData = e.payload as any;
+          
+          setConnectionStatus('reconnecting');
+          
+          toast({
+            title: 'Connection Issue',
+            description: `Experiencing connectivity problems. Retrying... (${errorData.consecutive_failures || 1} attempts)`,
+            status: 'warning',
+            duration: 5000,
+            isClosable: true,
+          });
+
+          // Reset connection status after a delay if no more errors
+          setTimeout(() => {
+            setConnectionStatus('connected');
+          }, 10000);
+        });
+
         // Store all unlisten functions for cleanup
-        unlistenFunctions = [unlistenStart, unlistenMatch, unlistenEnd];
+        unlistenFunctions = [unlistenStart, unlistenMatch, unlistenEnd, unlistenConnectionError];
       } catch (error) {
         console.error('Failed to initialize event listeners:', error);
       }
     };
 
+    const cleanupListeners = useCallback(() => {
+      unlistenFunctions.forEach(unlisten => {
+          try {
+              unlisten();
+          } catch (error) {
+              console.error('Error during event listener cleanup:', error);
+          }
+      });
+      if (matchTimeout) clearTimeout(matchTimeout);
+    }, [unlistenFunctions, matchTimeout]);
+
     initialize();
     initializeEventListeners();
 
-    // Cleanup function
-    return () => {
-      unlistenFunctions.forEach(unlisten => {
-        try {
-          unlisten();
-        } catch (error) {
-          console.error('Error during event listener cleanup:', error);
-        }
-      });
-    };
-  }, [setMode, setMatchData, setDashboard, setSummoner, gameName, tagLine, region]);
+    return cleanupListeners;
+  }, [
+    setSummoner,
+    setDashboard,
+    hasValidSummonerMemo,
+    handleGameStarted,
+    handleMatchData,
+    handleGameEnded,
+    handleConnectionError,
+    handleConnectionRestored
+  ]);
 
   if (!initialized) {
     return <div className="app-container" />;
@@ -117,8 +238,17 @@ function App() {
 
   return (
     <div className="app-container">
+      {/* Connection Status Indicator */}
+      <MemoizedConnectionStatus status={connectionStatus} />
+      
       {/* Show navigation for dashboard and champions modes */}
-      {(mode === 'dashboard' || mode === 'champions') && <Navigation />}
+      {showNavigation && <MemoizedNavigation />}
+
+      {matchTimeoutError && mode === 'loading' && (
+        <Box p={6} textAlign="center" color="red.500" fontWeight="bold">
+          {matchTimeoutError}
+        </Box>
+      )}
 
       <AnimatePresence mode="wait">
         {mode === 'dashboard' && (
@@ -129,10 +259,10 @@ function App() {
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.3 }}
           >
-            <DashboardView data={dashboard} />
+            <MemoizedDashboardView data={dashboard} />
           </motion.div>
         )}
-        {mode === 'loading' && (
+        {mode === 'loading' && !matchTimeoutError && (
           <motion.div
             key="load"
             initial={{ opacity: 0, y: 20 }}
@@ -140,7 +270,7 @@ function App() {
             exit={{ opacity: 0, y: -20 }}
             transition={{ duration: 0.3 }}
           >
-            <PreMatchView />
+            <MemoizedPreMatchView />
           </motion.div>
         )}
         {mode === 'champions' && (
@@ -151,7 +281,7 @@ function App() {
             exit={{ opacity: 0, y: -20 }}
             transition={{ duration: 0.3 }}
           >
-            <ChampionsView />
+            <MemoizedChampionsView />
           </motion.div>
         )}
         {mode === 'ingame' && (
@@ -162,7 +292,7 @@ function App() {
             exit={{ opacity: 0, x: -20 }}
             transition={{ duration: 0.3 }}
           >
-            <MatchView data={matchData} />
+            <MemoizedMatchView data={matchData} />
           </motion.div>
         )}
       </AnimatePresence>
@@ -170,4 +300,4 @@ function App() {
   );
 }
 
-export default App;
+export default React.memo(App);

@@ -7,14 +7,19 @@ import {
     ChampionMatchup,
     CounterData,
     ChampionRole,
-    BuildSource,
     ChampionSortBy,
     ChampionFilters,
     MatchupDifficulty
 } from '../types/champion';
 
-// Riot Data Dragon CDN for champion assets
-const DATA_DRAGON_VERSION = '14.1.1'; // Update this with latest patch version
+// Import champion asset service for local images
+import { ChampionAssetService } from './championAssetService';
+import { ExternalAPIService } from './externalAPIService';
+import { ConfigService } from './configService';
+import { RiotAPIService } from './riotAPIService';
+
+// Riot Data Dragon CDN for champion assets (fallback)
+const DATA_DRAGON_VERSION = '14.23.1'; // Updated to latest patch as of July 2025
 const CHAMPION_SPLASH_BASE = `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/`;
 const CHAMPION_SQUARE_BASE = `https://ddragon.leagueoflegends.com/cdn/${DATA_DRAGON_VERSION}/img/champion/`;
 
@@ -40,11 +45,13 @@ export class ChampionService {
         if (this.champions.length === 0) {
             try {
                 const fetchedChampions = await invoke('get_all_champions') as Champion[];
-                // Add image URLs to each champion
+                // Add local image URLs to each champion using ChampionAssetService
+                const assetService = ChampionAssetService.getInstance();
                 this.champions = fetchedChampions.map(champion => ({
                     ...champion,
-                    splashUrl: `${CHAMPION_SPLASH_BASE}${champion.key}_0.jpg`,
-                    squareUrl: `${CHAMPION_SQUARE_BASE}${champion.key}.png`
+                    splashUrl: assetService.getChampionSplashUrl(champion.key),
+                    squareUrl: assetService.getChampionPortraitUrl(champion.key),
+                    iconUrl: assetService.getChampionIconUrl(champion.key)
                 }));
             } catch (error) {
                 console.error('Failed to fetch champions:', error);
@@ -121,7 +128,13 @@ export class ChampionService {
             }
         }
         
-        return this.counterData.get(championId) || { counters: [], countered: [] };
+        return this.counterData.get(championId) || {
+            championId,
+            role,
+            counters: { hardCounters: [], softCounters: [] },
+            goodAgainst: { hardCounters: [], softCounters: [] },
+            banRecommendations: []
+        };
     }
 
     // Sort and filter champions
@@ -183,20 +196,173 @@ export class ChampionService {
     }
 
     // Private methods for data aggregation
-    private async aggregateBuildsFromSources(championId: number, role: ChampionRole, _rank: string): Promise<ChampionBuild[]> {
-        // In a real implementation, this would fetch from multiple sources
-        // For now, return mock data
-        return this.getMockBuilds(championId, role);
+    private async aggregateBuildsFromSources(championId: number, role: ChampionRole, rank: string): Promise<ChampionBuild[]> {
+        try {
+            // First try the backend API
+            const builds = await invoke('get_champion_builds', {
+                championId,
+                role: role.toLowerCase(),
+                rank: rank.toLowerCase()
+            }) as ChampionBuild[];
+            
+            // If backend returns real data, use it, otherwise try external APIs
+            if (builds.length > 0 && !builds[0].id?.includes('mock')) {
+                return builds;
+            }
+
+            // Fallback to external APIs for real data (if enabled)
+            const configService = ConfigService.getInstance();
+            const config = configService.getConfig();
+            
+            if (config.useExternalAPIs) {
+                const champion = this.champions.find(c => c.id === championId);
+                if (champion) {
+                    // Try Riot API first if configured
+                    if (config.riotAPIKey) {
+                        const riotAPIService = RiotAPIService.getInstance();
+                        const riotBuilds = await riotAPIService.getChampionBuilds(
+                            championId,
+                            champion.name,
+                            role,
+                            rank
+                        );
+                        
+                        if (riotBuilds.length > 0) {
+                            return riotBuilds;
+                        }
+                    }
+                    
+                    // Fallback to other external APIs
+                    const externalAPIService = ExternalAPIService.getInstance();
+                    const externalBuilds = await externalAPIService.getChampionBuilds(
+                        championId, 
+                        champion.name, 
+                        champion.key, 
+                        role, 
+                        rank
+                    );
+                    
+                    if (externalBuilds.length > 0) {
+                        return externalBuilds;
+                    }
+                }
+            }
+
+            // Final fallback to mock data
+            return this.getMockBuilds(championId, role);
+        } catch (error) {
+            console.error('Failed to fetch champion builds from all sources:', error);
+            return this.getMockBuilds(championId, role);
+        }
     }
 
-    private async aggregateMatchupsFromSources(championId: number, role: ChampionRole, _rank: string): Promise<ChampionMatchup[]> {
-        // In a real implementation, this would fetch from multiple sources
-        return this.getMockMatchups(championId, role);
+    private async aggregateMatchupsFromSources(championId: number, role: ChampionRole, rank: string): Promise<ChampionMatchup[]> {
+        try {
+            // First try the backend API
+            const matchups = await invoke('get_champion_matchups', {
+                championId,
+                role: role.toLowerCase(),
+                rank: rank.toLowerCase()
+            }) as ChampionMatchup[];
+            
+            // If backend returns real data, use it, otherwise try external APIs
+            if (matchups.length > 0 && matchups[0].enemyChampionName !== 'Riven') { // Check if not mock data
+                return matchups;
+            }
+
+            // Fallback to external APIs for real data (if enabled)
+            const configService = ConfigService.getInstance();
+            const config = configService.getConfig();
+            
+            if (config.useExternalAPIs) {
+                const champion = this.champions.find(c => c.id === championId);
+                if (champion) {
+                    // Try Riot API first if configured
+                    if (config.riotAPIKey) {
+                        const riotAPIService = RiotAPIService.getInstance();
+                        const riotMatchups = await riotAPIService.getChampionMatchups(
+                            championId,
+                            champion.name,
+                            role,
+                            rank
+                        );
+                        
+                        if (riotMatchups.length > 0) {
+                            return riotMatchups;
+                        }
+                    }
+                    
+                    // Fallback to other external APIs
+                    const externalAPIService = ExternalAPIService.getInstance();
+                    const externalMatchups = await externalAPIService.getChampionMatchups(
+                        championId, 
+                        champion.name, 
+                        champion.key, 
+                        role, 
+                        rank
+                    );
+                    
+                    if (externalMatchups.length > 0) {
+                        return externalMatchups;
+                    }
+                }
+            }
+
+            // Final fallback to mock data
+            return this.getMockMatchups(championId, role);
+        } catch (error) {
+            console.error('Failed to fetch champion matchups from all sources:', error);
+            return this.getMockMatchups(championId, role);
+        }
     }
 
-    private async aggregateCounterDataFromSources(championId: number, _role: ChampionRole, _rank: string): Promise<CounterData> {
-        // In a real implementation, this would fetch from multiple sources
-        return this.getMockCounterData(championId);
+    private async aggregateCounterDataFromSources(championId: number, role: ChampionRole, rank: string): Promise<CounterData> {
+        try {
+            // First try the backend API
+            const counterData = await invoke('get_counter_data', {
+                championId,
+                role: role.toLowerCase(),
+                rank: rank.toLowerCase()
+            }) as CounterData;
+            
+            // Check if we got real data (not mock)
+            const hasRealData = counterData.counters?.hardCounters && 
+                              counterData.counters.hardCounters.length > 0 && 
+                              counterData.counters.hardCounters[0]?.championName !== 'Renekton';
+            
+            if (hasRealData) {
+                return counterData;
+            }
+
+            // Fallback to external APIs for real data (if enabled)
+            const configService = ConfigService.getInstance();
+            const config = configService.getConfig();
+            
+            if (config.useExternalAPIs) {
+                const champion = this.champions.find(c => c.id === championId);
+                if (champion) {
+                    const externalAPIService = ExternalAPIService.getInstance();
+                    const externalCounterData = await externalAPIService.getCounterData(
+                        championId, 
+                        champion.name, 
+                        champion.key, 
+                        role, 
+                        rank
+                    );
+                    
+                    if (externalCounterData.counters?.hardCounters && 
+                        externalCounterData.counters.hardCounters.length > 0) {
+                        return externalCounterData;
+                    }
+                }
+            }
+
+            // Final fallback to mock data
+            return this.getMockCounterData(championId);
+        } catch (error) {
+            console.error('Failed to fetch counter data from all sources:', error);
+            return this.getMockCounterData(championId);
+        }
     }
 
     // Mock data generators for development
@@ -279,34 +445,30 @@ export class ChampionService {
             {
                 id: `${championId}-${role}-1`,
                 name: 'Goredrinker Build',
-                role,
-                rank: 'Diamond+',
+                source: 'Community',
+                pickRate: 45.8,
+                winRate: 63.2,
+                games: 15420,
                 items: {
-                    starter: [1054, 2003], // Doran's Shield + Health Potions
                     core: [6630, 3071, 3742], // Goredrinker, Black Cleaver, Dead Man's Plate
-                    boots: 3047, // Plated Steelcaps
-                    situational: [3193, 3065, 3143], // Gargoyle, Spirit Visage, Randuin's
-                    luxury: [3748, 3026], // Titanic Hydra, Guardian Angel
-                    fullBuild: [6630, 3071, 3047, 3742, 3193, 3748]
+                    boots: [3047], // Plated Steelcaps
+                    situational: [3193, 3065, 3143] // Gargoyle, Spirit Visage, Randuin's
                 },
                 runes: {
-                    primaryTree: 8000, // Precision
-                    keystone: 8010, // Conqueror
-                    primaryRunes: [9101, 9111, 8014], // Overheal, Legend: Alacrity, Coup de Grace
-                    secondaryTree: 8400, // Resolve
-                    secondaryRunes: [8429, 8453], // Conditioning, Revitalize
-                    statShards: [5008, 5008, 5002] // Adaptive Force x2, Armor
+                    primary: {
+                        tree: 'Precision',
+                        keystone: 'Conqueror',
+                        runes: ['Overheal', 'Legend: Alacrity', 'Coup de Grace']
+                    },
+                    secondary: {
+                        tree: 'Resolve',
+                        runes: ['Conditioning', 'Revitalize']
+                    },
+                    shards: ['Adaptive Force', 'Adaptive Force', 'Armor']
                 },
-                skillOrder: {
-                    order: 'QWEQWRQWQWRWWEEREE',
-                    maxOrder: 'Q>W>E',
-                    description: 'Max Q first for damage, W second for sustain'
-                },
-                spells: { spell1: 4, spell2: 12 }, // Flash, Teleport
-                winRate: 63.2,
-                pickRate: 45.8,
-                sampleSize: 15420,
-                sources: [BuildSource.UGG, BuildSource.OPGG]
+                skillOrder: 'Q>W>E',
+                startingItems: [1054, 2003],
+                summonerSpells: ['Flash', 'Teleport']
             }
         ];
     }
@@ -332,30 +494,90 @@ export class ChampionService {
         ];
     }
 
-    private getMockCounterData(_championId: number): CounterData {
+    private getMockCounterData(championId: number): CounterData {
         return {
-            counters: [
+            championId,
+            role: ChampionRole.TOP,
+            counters: {
+                hardCounters: [
+                    {
+                        championId: 58,
+                        championName: 'Renekton',
+                        winRateAgainst: 34.2,
+                        difficulty: 'Hard',
+                        reason: 'Strong early game dominance and sustain advantage'
+                    },
+                    {
+                        championId: 122,
+                        championName: 'Darius',
+                        winRateAgainst: 36.8,
+                        difficulty: 'Hard',
+                        reason: 'High damage output and kill pressure in lane'
+                    }
+                ],
+                softCounters: [
+                    {
+                        championId: 92,
+                        championName: 'Riven',
+                        winRateAgainst: 42.1,
+                        difficulty: 'Medium',
+                        reason: 'Mobile champion with good all-in potential'
+                    },
+                    {
+                        championId: 85,
+                        championName: 'Kennen',
+                        winRateAgainst: 44.5,
+                        difficulty: 'Medium',
+                        reason: 'Ranged advantage and teamfight utility'
+                    }
+                ]
+            },
+            goodAgainst: {
+                hardCounters: [
+                    {
+                        championId: 17,
+                        championName: 'Teemo',
+                        winRateAgainst: 68.9,
+                        difficulty: 'Easy',
+                        reason: 'Can easily engage and burst down squishy target'
+                    },
+                    {
+                        championId: 115,
+                        championName: 'Ziggs',
+                        winRateAgainst: 65.2,
+                        difficulty: 'Easy',
+                        reason: 'High mobility to close gap on immobile mage'
+                    }
+                ],
+                softCounters: [
+                    {
+                        championId: 79,
+                        championName: 'Gragas',
+                        winRateAgainst: 56.3,
+                        difficulty: 'Medium-Easy',
+                        reason: 'Better sustain and scaling potential'
+                    },
+                    {
+                        championId: 14,
+                        championName: 'Sion',
+                        winRateAgainst: 58.7,
+                        difficulty: 'Medium-Easy',
+                        reason: 'Can outscale and provides more utility'
+                    }
+                ]
+            },
+            banRecommendations: [
                 {
-                    championId: 58, championName: 'Renekton', winRate: 54.2,
-                    gamesPlayed: 892, advantage: 8.5, confidence: 0.85,
-                    sources: [BuildSource.UGG, BuildSource.OPGG]
+                    championId: 58,
+                    championName: 'Renekton',
+                    banRate: 15.4,
+                    reason: 'Most difficult matchup to play against'
                 },
                 {
-                    championId: 92, championName: 'Riven', winRate: 52.1,
-                    gamesPlayed: 1250, advantage: 4.8, confidence: 0.92,
-                    sources: [BuildSource.UGG, BuildSource.MOBALYTICS]
-                }
-            ],
-            countered: [
-                {
-                    championId: 150, championName: 'Gnar', winRate: 42.8,
-                    gamesPlayed: 743, advantage: -12.4, confidence: 0.78,
-                    sources: [BuildSource.UGG, BuildSource.LEAGUEOFGRAPHS]
-                },
-                {
-                    championId: 17, championName: 'Teemo', winRate: 38.9,
-                    gamesPlayed: 456, advantage: -18.2, confidence: 0.71,
-                    sources: [BuildSource.OPGG, BuildSource.MOBALYTICS]
+                    championId: 122,
+                    championName: 'Darius',
+                    banRate: 12.8,
+                    reason: 'High kill pressure in early game'
                 }
             ]
         };
